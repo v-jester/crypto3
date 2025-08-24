@@ -7,7 +7,6 @@ PyYAML==6.0.1
 # Async and networking
 aiohttp==3.9.1
 websockets==12.0
-asyncio==3.4.3
 httpx==0.25.2
 
 # Exchange API
@@ -21,7 +20,7 @@ scipy==1.11.4
 numba==0.58.1
 
 # Technical analysis
-ta-lib==0.4.28
+# ta-lib==0.4.28  # Закомментировано - сложная установка на Windows
 pandas-ta==0.3.14b0
 
 # Machine Learning
@@ -33,7 +32,7 @@ optuna==3.5.0  # For hyperparameter optimization
 # Database
 redis==5.0.1
 psycopg2-binary==2.9.9  # PostgreSQL/TimescaleDB
-questdb==1.0.1
+# questdb==1.0.1  # Закомментировано - опциональная зависимость
 sqlalchemy==2.0.25
 alembic==1.13.1  # Database migrations
 
@@ -64,7 +63,13 @@ orjson==3.9.10  # Fast JSON
 marshmallow==3.20.1
 dacite==1.8.1  # Dataclass utils
 
-# Deployment
-uvloop==0.19.0  # Fast event loop
+# System monitoring
+psutil==5.9.6
+
+# Deployment and Performance
+# uvloop==0.19.0  # Fast event loop - только для Unix систем
 gunicorn==21.2.0
 python-daemon==3.0.1
+
+# Job scheduling
+apscheduler==3.10.4
