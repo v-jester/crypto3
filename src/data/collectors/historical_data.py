@@ -8,10 +8,38 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from binance import AsyncClient
-import talib as ta
-from src.monitoring.logger import logger, log_performance
-from src.data.storage.redis_client import cache_manager
+import pandas_ta as ta  # Используем pandas_ta вместо talib
+from src.monitoring.logger import logger
+from src.data.storage.redis_client import redis_client
 from src.config.settings import settings
+from functools import wraps
+import time
+
+
+def log_performance(name: str = None):
+    """Декоратор для логирования производительности"""
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            start_time = time.perf_counter()
+            try:
+                result = await func(*args, **kwargs)
+                execution_time = time.perf_counter() - start_time
+                logger.logger.debug(
+                    f"{name or func.__name__} executed in {execution_time:.3f}s"
+                )
+                return result
+            except Exception as e:
+                execution_time = time.perf_counter() - start_time
+                logger.logger.error(
+                    f"{name or func.__name__} failed after {execution_time:.3f}s: {e}"
+                )
+                raise
+
+        return wrapper
+
+    return decorator
 
 
 class HistoricalDataCollector:
@@ -20,6 +48,7 @@ class HistoricalDataCollector:
     def __init__(self):
         self.client: Optional[AsyncClient] = None
         self.symbol_info_cache: Dict[str, Dict] = {}
+        self.force_refresh = False  # Добавляем атрибут для совместимости с кешем
 
     async def initialize(self, client: AsyncClient):
         """Инициализация с клиентом Binance"""
@@ -60,7 +89,6 @@ class HistoricalDataCollector:
             logger.logger.error(f"Failed to load symbol info: {e}")
 
     @log_performance("fetch_historical_data")
-    @cache_manager.cache_result(ttl=300, prefix="historical")
     async def fetch_historical_data(
             self,
             symbol: str,
@@ -80,6 +108,19 @@ class HistoricalDataCollector:
         Returns:
             DataFrame с OHLCV данными и индикаторами
         """
+        # Проверяем кеш
+        cache_key = f"historical:{symbol}:{interval}:{days_back}"
+
+        # Пытаемся получить из кеша
+        if not self.force_refresh:
+            cached_data = await redis_client.get(cache_key)
+            if cached_data and isinstance(cached_data, dict):
+                logger.logger.debug(f"Using cached data for {symbol}")
+                try:
+                    return pd.DataFrame(cached_data)
+                except:
+                    pass  # Если не получилось восстановить из кеша, загружаем заново
+
         try:
             # Расчёт временных меток
             end_time = datetime.utcnow()
@@ -127,27 +168,26 @@ class HistoricalDataCollector:
             # Добавление рыночной микроструктуры
             self._add_market_microstructure(df)
 
+            # ИСПРАВЛЕНО: правильное логирование без именованных параметров
             logger.logger.debug(
-                f"Fetched {len(df)} candles for {symbol} {interval}",
-                symbol=symbol,
-                interval=interval,
-                records=len(df)
+                f"Fetched {len(df)} candles for {symbol} {interval}"
             )
+
+            # Кешируем результат
+            await redis_client.set(cache_key, df.to_dict(), expire=300)
 
             return df
 
         except Exception as e:
-            # ИСПРАВЛЕНО: правильный вызов логирования
+            # ИСПРАВЛЕНО: правильное логирование ошибки
             logger.logger.error(
-                f"Failed to fetch historical data: {e}",
-                exc_info=True,
-                symbol=symbol,
-                interval=interval
+                f"Failed to fetch historical data for {symbol}: {e}"
             )
-            raise
+            # Возвращаем пустой DataFrame вместо исключения
+            return pd.DataFrame()
 
     def _add_indicators(self, df: pd.DataFrame):
-        """Добавление технических индикаторов"""
+        """Добавление технических индикаторов используя pandas_ta"""
         try:
             # Проверка минимального количества данных
             if len(df) < 50:
@@ -155,78 +195,91 @@ class HistoricalDataCollector:
                 return
 
             # EMA
-            df["ema_9"] = ta.EMA(df["close"], timeperiod=9)
-            df["ema_20"] = ta.EMA(df["close"], timeperiod=20)
-            df["ema_50"] = ta.EMA(df["close"], timeperiod=50)
-            df["ema_200"] = ta.EMA(df["close"], timeperiod=200)
+            df["ema_9"] = ta.ema(df["close"], length=9)
+            df["ema_20"] = ta.ema(df["close"], length=20)
+            df["ema_50"] = ta.ema(df["close"], length=50)
+            df["ema_200"] = ta.ema(df["close"], length=200)
 
             # SMA
-            df["sma_20"] = ta.SMA(df["close"], timeperiod=20)
-            df["sma_50"] = ta.SMA(df["close"], timeperiod=50)
+            df["sma_20"] = ta.sma(df["close"], length=20)
+            df["sma_50"] = ta.sma(df["close"], length=50)
 
             # RSI
-            df["rsi"] = ta.RSI(df["close"], timeperiod=settings.signals.RSI_PERIOD)
-            df["rsi_14"] = ta.RSI(df["close"], timeperiod=14)
+            df["rsi"] = ta.rsi(df["close"], length=settings.signals.RSI_PERIOD)
+            df["rsi_14"] = ta.rsi(df["close"], length=14)
 
             # MACD
-            macd, signal, hist = ta.MACD(
+            macd_result = ta.macd(
                 df["close"],
-                fastperiod=settings.signals.MACD_FAST,
-                slowperiod=settings.signals.MACD_SLOW,
-                signalperiod=settings.signals.MACD_SIGNAL
+                fast=settings.signals.MACD_FAST,
+                slow=settings.signals.MACD_SLOW,
+                signal=settings.signals.MACD_SIGNAL
             )
-            df["macd"] = macd
-            df["macd_signal"] = signal
-            df["macd_hist"] = hist
+            if macd_result is not None and not macd_result.empty:
+                # pandas_ta возвращает DataFrame с колонками MACD_fast_slow_signal, MACDh_fast_slow_signal, MACDs_fast_slow_signal
+                macd_cols = macd_result.columns
+                if len(macd_cols) >= 3:
+                    df["macd"] = macd_result.iloc[:, 0]  # MACD line
+                    df["macd_signal"] = macd_result.iloc[:, 2]  # Signal line
+                    df["macd_hist"] = macd_result.iloc[:, 1]  # Histogram
 
             # Bollinger Bands
-            upper, middle, lower = ta.BBANDS(
+            bb_result = ta.bbands(
                 df["close"],
-                timeperiod=settings.signals.BB_PERIOD,
-                nbdevup=settings.signals.BB_STD,
-                nbdevdn=settings.signals.BB_STD
+                length=settings.signals.BB_PERIOD,
+                std=settings.signals.BB_STD
             )
-            df["bb_upper"] = upper
-            df["bb_middle"] = middle
-            df["bb_lower"] = lower
-            df["bb_width"] = upper - lower
-            df["bb_percent"] = (df["close"] - lower) / (upper - lower)
+            if bb_result is not None and not bb_result.empty:
+                bb_cols = bb_result.columns
+                if len(bb_cols) >= 3:
+                    df["bb_lower"] = bb_result.iloc[:, 0]  # Lower band
+                    df["bb_middle"] = bb_result.iloc[:, 1]  # Middle band
+                    df["bb_upper"] = bb_result.iloc[:, 2]  # Upper band
+                    df["bb_width"] = df["bb_upper"] - df["bb_lower"]
+                    # Безопасное вычисление bb_percent
+                    bb_range = df["bb_upper"] - df["bb_lower"]
+                    df["bb_percent"] = df.apply(
+                        lambda row: (row["close"] - row["bb_lower"]) / row["bb_width"]
+                        if row["bb_width"] > 0 else 0.5,
+                        axis=1
+                    )
 
             # ATR
-            df["atr"] = ta.ATR(df["high"], df["low"], df["close"], timeperiod=14)
-            df["atr_percent"] = df["atr"] / df["close"] * 100
+            df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=14)
+            df["atr_percent"] = (df["atr"] / df["close"]) * 100
 
             # Volume indicators
-            df["obv"] = ta.OBV(df["close"], df["volume"])
-            df["ad"] = ta.AD(df["high"], df["low"], df["close"], df["volume"])
-            df["adosc"] = ta.ADOSC(df["high"], df["low"], df["close"], df["volume"])
+            df["obv"] = ta.obv(df["close"], df["volume"])
+            df["ad"] = ta.ad(df["high"], df["low"], df["close"], df["volume"])
+            df["adosc"] = ta.adosc(df["high"], df["low"], df["close"], df["volume"])
 
             # Volatility
             df["volatility"] = df["close"].pct_change().rolling(50).std()
             df["volatility_rank"] = df["volatility"].rolling(252).rank(pct=True)
 
             # Stochastic
-            slowk, slowd = ta.STOCH(
-                df["high"], df["low"], df["close"],
-                fastk_period=14, slowk_period=3, slowd_period=3
-            )
-            df["stoch_k"] = slowk
-            df["stoch_d"] = slowd
+            stoch_result = ta.stoch(df["high"], df["low"], df["close"])
+            if stoch_result is not None and not stoch_result.empty:
+                stoch_cols = stoch_result.columns
+                if len(stoch_cols) >= 2:
+                    df["stoch_k"] = stoch_result.iloc[:, 0]
+                    df["stoch_d"] = stoch_result.iloc[:, 1]
 
             # Williams %R
-            df["williams_r"] = ta.WILLR(df["high"], df["low"], df["close"], timeperiod=14)
+            df["williams_r"] = ta.willr(df["high"], df["low"], df["close"], length=14)
 
             # CCI
-            df["cci"] = ta.CCI(df["high"], df["low"], df["close"], timeperiod=20)
+            df["cci"] = ta.cci(df["high"], df["low"], df["close"], length=20)
 
             # MFI
-            df["mfi"] = ta.MFI(df["high"], df["low"], df["close"], df["volume"], timeperiod=14)
+            df["mfi"] = ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=14)
 
             # ROC
-            df["roc"] = ta.ROC(df["close"], timeperiod=10)
+            df["roc"] = ta.roc(df["close"], length=10)
 
-            # ИСПРАВЛЕНО: используем bfill вместо fillna с method
+            # Заполняем пропущенные значения
             df.bfill(inplace=True)
+            df.fillna(method='ffill', inplace=True)
 
         except Exception as e:
             logger.logger.error(f"Failed to calculate indicators: {e}")
@@ -236,16 +289,25 @@ class HistoricalDataCollector:
         try:
             # Спред
             df["spread"] = df["high"] - df["low"]
-            df["spread_percent"] = df["spread"] / df["close"] * 100
+            df["spread_percent"] = (df["spread"] / df["close"]) * 100
 
             # Объёмные метрики
-            df["volume_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
+            volume_ma = df["volume"].rolling(20).mean()
+            df["volume_ratio"] = df["volume"] / volume_ma.where(volume_ma > 0, 1)
+
+            # Безопасное вычисление volume_delta
             df["volume_delta"] = df["taker_buy_base"] - (df["volume"] - df["taker_buy_base"])
-            df["buy_pressure"] = df["taker_buy_base"] / df["volume"]
+
+            # Безопасное вычисление buy_pressure
+            df["buy_pressure"] = df.apply(
+                lambda row: row["taker_buy_base"] / row["volume"]
+                if row["volume"] > 0 else 0.5,
+                axis=1
+            )
 
             # Ценовые уровни
-            df["distance_from_high"] = (df["high"] - df["close"]) / df["close"] * 100
-            df["distance_from_low"] = (df["close"] - df["low"]) / df["close"] * 100
+            df["distance_from_high"] = ((df["high"] - df["close"]) / df["close"]) * 100
+            df["distance_from_low"] = ((df["close"] - df["low"]) / df["close"]) * 100
 
             # Моментум
             df["momentum_1"] = df["close"].pct_change(1)
@@ -253,14 +315,20 @@ class HistoricalDataCollector:
             df["momentum_10"] = df["close"].pct_change(10)
 
             # Эффективность движения
-            df["efficiency_ratio"] = abs(df["close"].diff(10)) / df["spread"].rolling(10).sum()
+            price_change = df["close"].diff(10).abs()
+            spread_sum = df["spread"].rolling(10).sum()
+            df["efficiency_ratio"] = price_change / spread_sum.where(spread_sum > 0, 1)
 
             # VWAP
             df["vwap"] = (df["close"] * df["volume"]).cumsum() / df["volume"].cumsum()
-            df["vwap_distance"] = (df["close"] - df["vwap"]) / df["vwap"] * 100
+            df["vwap_distance"] = ((df["close"] - df["vwap"]) / df["vwap"]) * 100
 
             # Накопление/распределение
-            df["accumulation"] = ((df["close"] - df["low"]) - (df["high"] - df["close"])) / df["spread"] * df["volume"]
+            df["accumulation"] = df.apply(
+                lambda row: ((row["close"] - row["low"]) - (row["high"] - row["close"])) / row["spread"] * row["volume"]
+                if row["spread"] > 0 else 0,
+                axis=1
+            )
 
         except Exception as e:
             logger.logger.error(f"Failed to calculate market microstructure: {e}")
@@ -290,7 +358,8 @@ class HistoricalDataCollector:
         for tf in timeframes:
             try:
                 df = await self.fetch_historical_data(symbol, tf, days_back)
-                data[tf] = df
+                if not df.empty:
+                    data[tf] = df
             except Exception as e:
                 logger.logger.error(f"Failed to fetch {tf} data for {symbol}: {e}")
 
@@ -311,7 +380,7 @@ class HistoricalDataCollector:
                     "close": float(latest["close"]),
                     "volume": float(latest["volume"]),
                     "rsi": float(latest.get("rsi", 50)),
-                    "timestamp": latest.name.isoformat()
+                    "timestamp": latest.name.isoformat() if hasattr(latest.name, 'isoformat') else str(latest.name)
                 }
         except Exception as e:
             logger.logger.error(f"Failed to get latest candle: {e}")

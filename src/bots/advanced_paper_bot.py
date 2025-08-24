@@ -573,14 +573,12 @@ class AdvancedPaperTradingBot:
             fee = position_size * entry_price * self.taker_fee
             self.current_balance -= fee
 
-            # Логируем сделку
-            logger.log_trade(
-                action="open",
-                symbol=symbol,
-                side=signal['action'],
-                price=entry_price,
-                quantity=position_size,
-                order_id=position.id
+            # Логируем сделку - исправленный вызов
+            # Не используем logger.log_trade с именованными параметрами
+            logger.logger.info(
+                f"Trade executed | Action: open | Symbol: {symbol} | "
+                f"Side: {signal['action']} | Price: {entry_price:.2f} | "
+                f"Quantity: {position_size:.4f} | Order ID: {position.id}"
             )
 
             logger.logger.info(
@@ -657,15 +655,12 @@ class AdvancedPaperTradingBot:
             'timestamp': datetime.utcnow()
         })
 
-        # Логируем
-        logger.log_trade(
-            action="close",
-            symbol=symbol,
-            side=position.side,
-            price=close_price,
-            quantity=position.quantity,
-            pnl=pnl,
-            order_id=position.id
+        # Логируем закрытие - исправленный вызов
+        logger.logger.info(
+            f"Trade executed | Action: close | Symbol: {symbol} | "
+            f"Side: {position.side} | Price: {close_price:.2f} | "
+            f"Quantity: {position.quantity:.4f} | PnL: {pnl:.2f} | "
+            f"Order ID: {position.id}"
         )
 
         logger.logger.info(

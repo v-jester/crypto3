@@ -91,7 +91,7 @@ class TradingLogger:
             pnl: Optional[float] = None,
             **kwargs
     ):
-        """Логирование торговых операций"""
+        """Логирование торговых операций - ИСПРАВЛЕННЫЙ МЕТОД"""
         trade_data = {
             "event": "trade",
             "action": action,
@@ -105,8 +105,19 @@ class TradingLogger:
             **kwargs
         }
 
-        # Логируем в основной лог
-        self.logger.info("Trade executed", **trade_data)
+        # Формируем строку сообщения со всеми данными
+        message = (
+            f"Trade executed | Action: {action} | Symbol: {symbol} | "
+            f"Side: {side} | Price: {price:.4f} | Quantity: {quantity:.8f}"
+        )
+
+        if pnl is not None:
+            message += f" | PnL: {pnl:.2f}"
+        if order_id:
+            message += f" | Order ID: {order_id}"
+
+        # Логируем как строку без именованных параметров
+        self.logger.info(message)
 
         # Дополнительно сохраняем в отдельный файл сделок
         try:
@@ -126,7 +137,7 @@ class TradingLogger:
             metadata: Optional[Dict] = None,
             **kwargs
     ):
-        """Логирование торговых сигналов"""
+        """Логирование торговых сигналов - ИСПРАВЛЕННЫЙ МЕТОД"""
         signal_data = {
             "event": "signal",
             "symbol": symbol,
@@ -140,7 +151,18 @@ class TradingLogger:
             **kwargs
         }
 
-        self.logger.info("Signal generated", **signal_data)
+        # Формируем строку сообщения
+        message = (
+            f"Signal generated | Symbol: {symbol} | Type: {signal_type} | "
+            f"Confidence: {confidence:.2f} | Entry: {entry_price:.4f}"
+        )
+
+        if stop_loss:
+            message += f" | SL: {stop_loss:.4f}"
+        if take_profit:
+            message += f" | TP: {take_profit:.4f}"
+
+        self.logger.info(message)
 
         # Сохраняем историю сигналов
         try:
@@ -158,7 +180,7 @@ class TradingLogger:
             current_exposure: Optional[float] = None,
             **kwargs
     ):
-        """Логирование риск-событий"""
+        """Логирование риск-событий - ИСПРАВЛЕННЫЙ МЕТОД"""
         risk_data = {
             "event": "risk",
             "event_type": event_type,
@@ -170,11 +192,26 @@ class TradingLogger:
             **kwargs
         }
 
-        log_method = getattr(self.logger, severity.lower(), self.logger.warning)
-        log_method("Risk event", **risk_data)
+        # Формируем строку сообщения
+        log_message = f"Risk event | Type: {event_type} | Severity: {severity} | {message}"
+
+        if current_drawdown is not None:
+            log_message += f" | Drawdown: {current_drawdown:.2%}"
+        if current_exposure is not None:
+            log_message += f" | Exposure: {current_exposure:.2f}"
+
+        # Выбираем уровень логирования
+        if severity.upper() == "CRITICAL":
+            self.logger.critical(log_message)
+        elif severity.upper() == "ERROR":
+            self.logger.error(log_message)
+        elif severity.upper() == "WARNING":
+            self.logger.warning(log_message)
+        else:
+            self.logger.info(log_message)
 
         # Критические риск-события в отдельный файл
-        if severity in ["ERROR", "CRITICAL"]:
+        if severity.upper() in ["ERROR", "CRITICAL"]:
             try:
                 with open("logs/errors/risk_events.jsonl", "a") as f:
                     f.write(json.dumps(risk_data) + "\n")
@@ -188,7 +225,7 @@ class TradingLogger:
             unit: str = "",
             **kwargs
     ):
-        """Логирование метрик производительности"""
+        """Логирование метрик производительности - ИСПРАВЛЕННЫЙ МЕТОД"""
         perf_data = {
             "event": "performance",
             "metric": metric,
@@ -198,7 +235,15 @@ class TradingLogger:
             **kwargs
         }
 
-        self.logger.debug("Performance metric", **perf_data)
+        # Формируем строку сообщения
+        message = f"Performance | {metric}: {value:.3f}"
+        if unit:
+            message += f" {unit}"
+
+        for key, val in kwargs.items():
+            message += f" | {key}: {val}"
+
+        self.logger.debug(message)
 
         # Сохраняем метрики производительности
         try:
@@ -219,8 +264,17 @@ class TradingLogger:
         if context:
             error_data.update(context)
 
+        # Формируем строку сообщения
+        message = f"Error occurred | Type: {error_data['error_type']} | Message: {error_data['error_message']}"
+
+        if context:
+            for key, val in context.items():
+                # Ограничиваем длину значений контекста
+                val_str = str(val)[:100] if val else ""
+                message += f" | {key}: {val_str}"
+
         # Логируем ошибку
-        self.logger.error("Error occurred", exc_info=True, **error_data)
+        self.logger.error(message, exc_info=True)
 
         # Сохраняем в файл ошибок
         try:
