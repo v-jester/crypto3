@@ -1,7 +1,7 @@
-# src/ml/models/ml_engine.py
+﻿# src/ml/models/ml_engine.py
 """
-ML Engine с ансамблем XGBoost и LightGBM для предсказания движения цены
-Включает feature engineering, online learning и валидацию
+ML Engine СЃ Р°РЅСЃР°РјР±Р»РµРј XGBoost Рё LightGBM РґР»СЏ РїСЂРµРґСЃРєР°Р·Р°РЅРёСЏ РґРІРёР¶РµРЅРёСЏ С†РµРЅС‹
+Р’РєР»СЋС‡Р°РµС‚ feature engineering, online learning Рё РІР°Р»РёРґР°С†РёСЋ
 """
 import numpy as np
 import pandas as pd
@@ -21,11 +21,11 @@ from src.monitoring.metrics import metrics_collector
 
 
 class FeatureEngineering:
-    """Генератор признаков для ML моделей"""
+    """Р“РµРЅРµСЂР°С‚РѕСЂ РїСЂРёР·РЅР°РєРѕРІ РґР»СЏ ML РјРѕРґРµР»РµР№"""
 
     def __init__(self):
         self.feature_names = []
-        self.scaler = RobustScaler()  # Устойчив к выбросам
+        self.scaler = RobustScaler()  # РЈСЃС‚РѕР№С‡РёРІ Рє РІС‹Р±СЂРѕСЃР°Рј
 
     def create_features(
             self,
@@ -33,40 +33,40 @@ class FeatureEngineering:
             timeframes: List[int] = [5, 15, 60, 240]
     ) -> pd.DataFrame:
         """
-        Создание 3000+ признаков из OHLCV данных
+        РЎРѕР·РґР°РЅРёРµ 3000+ РїСЂРёР·РЅР°РєРѕРІ РёР· OHLCV РґР°РЅРЅС‹С…
 
         Args:
-            df: DataFrame с OHLCV данными
-            timeframes: Список таймфреймов для мультитаймфреймового анализа
+            df: DataFrame СЃ OHLCV РґР°РЅРЅС‹РјРё
+            timeframes: РЎРїРёСЃРѕРє С‚Р°Р№РјС„СЂРµР№РјРѕРІ РґР»СЏ РјСѓР»СЊС‚РёС‚Р°Р№РјС„СЂРµР№РјРѕРІРѕРіРѕ Р°РЅР°Р»РёР·Р°
 
         Returns:
-            DataFrame с признаками
+            DataFrame СЃ РїСЂРёР·РЅР°РєР°РјРё
         """
         features = pd.DataFrame(index=df.index)
 
-        # Базовые ценовые признаки
+        # Р‘Р°Р·РѕРІС‹Рµ С†РµРЅРѕРІС‹Рµ РїСЂРёР·РЅР°РєРё
         features = self._add_price_features(features, df)
 
-        # Технические индикаторы для разных таймфреймов
+        # РўРµС…РЅРёС‡РµСЃРєРёРµ РёРЅРґРёРєР°С‚РѕСЂС‹ РґР»СЏ СЂР°Р·РЅС‹С… С‚Р°Р№РјС„СЂРµР№РјРѕРІ
         for tf in timeframes:
             features = self._add_technical_features(features, df, tf)
 
-        # Микроструктура рынка
+        # РњРёРєСЂРѕСЃС‚СЂСѓРєС‚СѓСЂР° СЂС‹РЅРєР°
         features = self._add_microstructure_features(features, df)
 
-        # Объёмные признаки
+        # РћР±СЉС‘РјРЅС‹Рµ РїСЂРёР·РЅР°РєРё
         features = self._add_volume_features(features, df)
 
-        # Паттерны и свечные формации
+        # РџР°С‚С‚РµСЂРЅС‹ Рё СЃРІРµС‡РЅС‹Рµ С„РѕСЂРјР°С†РёРё
         features = self._add_pattern_features(features, df)
 
-        # Статистические признаки
+        # РЎС‚Р°С‚РёСЃС‚РёС‡РµСЃРєРёРµ РїСЂРёР·РЅР°РєРё
         features = self._add_statistical_features(features, df)
 
-        # Взаимодействия признаков
+        # Р’Р·Р°РёРјРѕРґРµР№СЃС‚РІРёСЏ РїСЂРёР·РЅР°РєРѕРІ
         features = self._add_interaction_features(features)
 
-        # Сохраняем имена признаков
+        # РЎРѕС…СЂР°РЅСЏРµРј РёРјРµРЅР° РїСЂРёР·РЅР°РєРѕРІ
         self.feature_names = features.columns.tolist()
 
         logger.logger.info(f"Created {len(self.feature_names)} features")
@@ -74,20 +74,20 @@ class FeatureEngineering:
         return features
 
     def _add_price_features(self, features: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
-        """Добавление ценовых признаков"""
-        # Изменения цены
+        """Р”РѕР±Р°РІР»РµРЅРёРµ С†РµРЅРѕРІС‹С… РїСЂРёР·РЅР°РєРѕРІ"""
+        # РР·РјРµРЅРµРЅРёСЏ С†РµРЅС‹
         for period in [1, 3, 5, 10, 20, 50]:
             features[f'returns_{period}'] = df['close'].pct_change(period)
             features[f'log_returns_{period}'] = np.log(df['close'] / df['close'].shift(period))
 
-        # Ценовые уровни
+        # Р¦РµРЅРѕРІС‹Рµ СѓСЂРѕРІРЅРё
         for period in [10, 20, 50, 100]:
             features[f'high_{period}'] = df['high'].rolling(period).max()
             features[f'low_{period}'] = df['low'].rolling(period).min()
             features[f'distance_from_high_{period}'] = (features[f'high_{period}'] - df['close']) / df['close']
             features[f'distance_from_low_{period}'] = (df['close'] - features[f'low_{period}']) / df['close']
 
-        # Ценовые каналы
+        # Р¦РµРЅРѕРІС‹Рµ РєР°РЅР°Р»С‹
         features['hl_ratio'] = df['high'] / df['low']
         features['co_ratio'] = df['close'] / df['open']
         features['body_size'] = abs(df['close'] - df['open']) / df['open']
@@ -102,7 +102,7 @@ class FeatureEngineering:
             df: pd.DataFrame,
             timeframe: int
     ) -> pd.DataFrame:
-        """Добавление технических индикаторов"""
+        """Р”РѕР±Р°РІР»РµРЅРёРµ С‚РµС…РЅРёС‡РµСЃРєРёС… РёРЅРґРёРєР°С‚РѕСЂРѕРІ"""
         prefix = f'tf{timeframe}_'
 
         # Moving Averages
@@ -118,7 +118,7 @@ class FeatureEngineering:
             features[f'{prefix}ema_{ema_period}'] = ema
             features[f'{prefix}price_to_ema_{ema_period}'] = df['close'] / ema
 
-        # RSI варианты
+        # RSI РІР°СЂРёР°РЅС‚С‹
         for rsi_period in [7, 14, 21]:
             delta = df['close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=rsi_period).mean()
@@ -129,7 +129,7 @@ class FeatureEngineering:
             features[f'{prefix}rsi_{rsi_period}_oversold'] = (rsi < 30).astype(int)
             features[f'{prefix}rsi_{rsi_period}_overbought'] = (rsi > 70).astype(int)
 
-        # MACD варианты
+        # MACD РІР°СЂРёР°РЅС‚С‹
         exp1 = df['close'].ewm(span=12, adjust=False).mean()
         exp2 = df['close'].ewm(span=26, adjust=False).mean()
         macd = exp1 - exp2
@@ -150,7 +150,7 @@ class FeatureEngineering:
             features[f'{prefix}bb_width_{bb_period}'] = upper - lower
             features[f'{prefix}bb_position_{bb_period}'] = (df['close'] - lower) / (upper - lower)
 
-        # ATR и волатильность
+        # ATR Рё РІРѕР»Р°С‚РёР»СЊРЅРѕСЃС‚СЊ
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
@@ -178,27 +178,27 @@ class FeatureEngineering:
             features: pd.DataFrame,
             df: pd.DataFrame
     ) -> pd.DataFrame:
-        """Добавление признаков микроструктуры рынка"""
-        # Спред и диапазон
+        """Р”РѕР±Р°РІР»РµРЅРёРµ РїСЂРёР·РЅР°РєРѕРІ РјРёРєСЂРѕСЃС‚СЂСѓРєС‚СѓСЂС‹ СЂС‹РЅРєР°"""
+        # РЎРїСЂРµРґ Рё РґРёР°РїР°Р·РѕРЅ
         features['spread'] = df['high'] - df['low']
         features['spread_pct'] = features['spread'] / df['close']
         features['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
         features['weighted_close'] = (df['high'] + df['low'] + 2 * df['close']) / 4
 
-        # Эффективность движения
+        # Р­С„С„РµРєС‚РёРІРЅРѕСЃС‚СЊ РґРІРёР¶РµРЅРёСЏ
         for period in [5, 10, 20]:
             price_change = df['close'].diff(period).abs()
             path_length = df['spread'].rolling(period).sum()
             features[f'efficiency_ratio_{period}'] = price_change / path_length
 
-        # Амплитуда и размах
+        # РђРјРїР»РёС‚СѓРґР° Рё СЂР°Р·РјР°С…
         for period in [5, 10, 20, 50]:
             features[f'amplitude_{period}'] = (
                                                       df['high'].rolling(period).max() -
                                                       df['low'].rolling(period).min()
                                               ) / df['close'].rolling(period).mean()
 
-        # Дисбаланс объёмов
+        # Р”РёСЃР±Р°Р»Р°РЅСЃ РѕР±СЉС‘РјРѕРІ
         if 'taker_buy_base' in df.columns:
             features['buy_sell_imbalance'] = (
                                                      2 * df['taker_buy_base'] - df['volume']
@@ -208,8 +208,8 @@ class FeatureEngineering:
         return features
 
     def _add_volume_features(self, features: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
-        """Добавление объёмных признаков"""
-        # Объёмные отношения
+        """Р”РѕР±Р°РІР»РµРЅРёРµ РѕР±СЉС‘РјРЅС‹С… РїСЂРёР·РЅР°РєРѕРІ"""
+        # РћР±СЉС‘РјРЅС‹Рµ РѕС‚РЅРѕС€РµРЅРёСЏ
         for period in [5, 10, 20, 50]:
             features[f'volume_ma_{period}'] = df['volume'].rolling(period).mean()
             features[f'volume_ratio_{period}'] = df['volume'] / features[f'volume_ma_{period}']
@@ -245,8 +245,8 @@ class FeatureEngineering:
         return features
 
     def _add_pattern_features(self, features: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
-        """Добавление свечных паттернов"""
-        # Базовые свечные паттерны
+        """Р”РѕР±Р°РІР»РµРЅРёРµ СЃРІРµС‡РЅС‹С… РїР°С‚С‚РµСЂРЅРѕРІ"""
+        # Р‘Р°Р·РѕРІС‹Рµ СЃРІРµС‡РЅС‹Рµ РїР°С‚С‚РµСЂРЅС‹
         body = df['close'] - df['open']
         body_abs = abs(body)
 
@@ -277,7 +277,7 @@ class FeatureEngineering:
                 (df['close'] < df['open'].shift(1))
         ).astype(int)
 
-        # Паттерны тренда
+        # РџР°С‚С‚РµСЂРЅС‹ С‚СЂРµРЅРґР°
         for period in [5, 10, 20]:
             # Higher Highs and Higher Lows (uptrend)
             hh = df['high'] > df['high'].shift(period)
@@ -292,23 +292,23 @@ class FeatureEngineering:
         return features
 
     def _add_statistical_features(self, features: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
-        """Добавление статистических признаков"""
-        # Скользящие статистики
+        """Р”РѕР±Р°РІР»РµРЅРёРµ СЃС‚Р°С‚РёСЃС‚РёС‡РµСЃРєРёС… РїСЂРёР·РЅР°РєРѕРІ"""
+        # РЎРєРѕР»СЊР·СЏС‰РёРµ СЃС‚Р°С‚РёСЃС‚РёРєРё
         for period in [5, 10, 20, 50]:
             returns = df['close'].pct_change()
 
-            # Моменты распределения
+            # РњРѕРјРµРЅС‚С‹ СЂР°СЃРїСЂРµРґРµР»РµРЅРёСЏ
             features[f'returns_mean_{period}'] = returns.rolling(period).mean()
             features[f'returns_std_{period}'] = returns.rolling(period).std()
             features[f'returns_skew_{period}'] = returns.rolling(period).skew()
             features[f'returns_kurt_{period}'] = returns.rolling(period).kurt()
 
-            # Квантили
+            # РљРІР°РЅС‚РёР»Рё
             features[f'returns_q25_{period}'] = returns.rolling(period).quantile(0.25)
             features[f'returns_q75_{period}'] = returns.rolling(period).quantile(0.75)
             features[f'returns_iqr_{period}'] = features[f'returns_q75_{period}'] - features[f'returns_q25_{period}']
 
-            # Автокорреляция
+            # РђРІС‚РѕРєРѕСЂСЂРµР»СЏС†РёСЏ
             for lag in [1, 3, 5]:
                 features[f'autocorr_{period}_lag{lag}'] = returns.rolling(period).apply(
                     lambda x: x.autocorr(lag=lag) if len(x) > lag else np.nan
@@ -329,8 +329,8 @@ class FeatureEngineering:
         return features
 
     def _add_interaction_features(self, features: pd.DataFrame) -> pd.DataFrame:
-        """Добавление взаимодействий между признаками"""
-        # Важные взаимодействия
+        """Р”РѕР±Р°РІР»РµРЅРёРµ РІР·Р°РёРјРѕРґРµР№СЃС‚РІРёР№ РјРµР¶РґСѓ РїСЂРёР·РЅР°РєР°РјРё"""
+        # Р’Р°Р¶РЅС‹Рµ РІР·Р°РёРјРѕРґРµР№СЃС‚РІРёСЏ
         if 'tf15_rsi_14' in features.columns and 'tf15_macd' in features.columns:
             features['rsi_macd_interaction'] = features['tf15_rsi_14'] * features['tf15_macd']
 
@@ -340,7 +340,7 @@ class FeatureEngineering:
         if 'tf15_bb_position_20' in features.columns and 'tf15_rsi_14' in features.columns:
             features['bb_rsi_interaction'] = features['tf15_bb_position_20'] * features['tf15_rsi_14']
 
-        # Полиномиальные признаки для ключевых индикаторов
+        # РџРѕР»РёРЅРѕРјРёР°Р»СЊРЅС‹Рµ РїСЂРёР·РЅР°РєРё РґР»СЏ РєР»СЋС‡РµРІС‹С… РёРЅРґРёРєР°С‚РѕСЂРѕРІ
         key_features = ['returns_1', 'volume_ratio_10', 'tf15_rsi_14']
         for feat in key_features:
             if feat in features.columns:
@@ -350,35 +350,35 @@ class FeatureEngineering:
         return features
 
     def fit_transform(self, features: pd.DataFrame) -> np.ndarray:
-        """Нормализация признаков"""
-        # Заполняем пропуски
+        """РќРѕСЂРјР°Р»РёР·Р°С†РёСЏ РїСЂРёР·РЅР°РєРѕРІ"""
+        # Р—Р°РїРѕР»РЅСЏРµРј РїСЂРѕРїСѓСЃРєРё
         features = features.fillna(method='ffill').fillna(0)
 
-        # Заменяем бесконечности
+        # Р—Р°РјРµРЅСЏРµРј Р±РµСЃРєРѕРЅРµС‡РЅРѕСЃС‚Рё
         features = features.replace([np.inf, -np.inf], 0)
 
-        # Нормализация
+        # РќРѕСЂРјР°Р»РёР·Р°С†РёСЏ
         return self.scaler.fit_transform(features)
 
     def transform(self, features: pd.DataFrame) -> np.ndarray:
-        """Трансформация признаков"""
+        """РўСЂР°РЅСЃС„РѕСЂРјР°С†РёСЏ РїСЂРёР·РЅР°РєРѕРІ"""
         features = features.fillna(method='ffill').fillna(0)
         features = features.replace([np.inf, -np.inf], 0)
         return self.scaler.transform(features)
 
 
 class CryptoMLEngine:
-    """Основной ML движок для предсказаний"""
+    """РћСЃРЅРѕРІРЅРѕР№ ML РґРІРёР¶РѕРє РґР»СЏ РїСЂРµРґСЃРєР°Р·Р°РЅРёР№"""
 
     def __init__(self):
         self.feature_engineering = FeatureEngineering()
         self.xgb_model = None
         self.lgb_model = None
-        self.ensemble_weights = {'xgboost': 0.6, 'lightgbm': 0.4}  # XGBoost показал лучшие результаты
+        self.ensemble_weights = {'xgboost': 0.6, 'lightgbm': 0.4}  # XGBoost РїРѕРєР°Р·Р°Р» Р»СѓС‡С€РёРµ СЂРµР·СѓР»СЊС‚Р°С‚С‹
         self.models_path = Path("models")
         self.models_path.mkdir(exist_ok=True)
 
-        # Параметры моделей (оптимизированные для крипто)
+        # РџР°СЂР°РјРµС‚СЂС‹ РјРѕРґРµР»РµР№ (РѕРїС‚РёРјРёР·РёСЂРѕРІР°РЅРЅС‹Рµ РґР»СЏ РєСЂРёРїС‚Рѕ)
         self.xgb_params = {
             'objective': 'multi:softprob',
             'num_class': 3,  # DOWN, NEUTRAL, UP
@@ -391,7 +391,7 @@ class CryptoMLEngine:
             'reg_lambda': 1,
             'random_state': 42,
             'n_jobs': -1,
-            'tree_method': 'hist',  # Быстрее для больших датасетов
+            'tree_method': 'hist',  # Р‘С‹СЃС‚СЂРµРµ РґР»СЏ Р±РѕР»СЊС€РёС… РґР°С‚Р°СЃРµС‚РѕРІ
             'predictor': 'cpu_predictor'
         }
 
@@ -413,7 +413,7 @@ class CryptoMLEngine:
             'device': 'cpu'
         }
 
-        # Буфер для online learning
+        # Р‘СѓС„РµСЂ РґР»СЏ online learning
         self.online_buffer = []
         self.online_buffer_size = 50
         self.last_training_time = None
@@ -425,19 +425,19 @@ class CryptoMLEngine:
             threshold: float = 0.002
     ) -> pd.Series:
         """
-        Подготовка целевой переменной
+        РџРѕРґРіРѕС‚РѕРІРєР° С†РµР»РµРІРѕР№ РїРµСЂРµРјРµРЅРЅРѕР№
 
         Args:
-            df: DataFrame с ценами
-            lookahead: Период предсказания (свечей вперёд)
-            threshold: Порог для классификации (0.2%)
+            df: DataFrame СЃ С†РµРЅР°РјРё
+            lookahead: РџРµСЂРёРѕРґ РїСЂРµРґСЃРєР°Р·Р°РЅРёСЏ (СЃРІРµС‡РµР№ РІРїРµСЂС‘Рґ)
+            threshold: РџРѕСЂРѕРі РґР»СЏ РєР»Р°СЃСЃРёС„РёРєР°С†РёРё (0.2%)
 
         Returns:
-            Series с метками классов: 0=DOWN, 1=NEUTRAL, 2=UP
+            Series СЃ РјРµС‚РєР°РјРё РєР»Р°СЃСЃРѕРІ: 0=DOWN, 1=NEUTRAL, 2=UP
         """
         future_returns = df['close'].shift(-lookahead) / df['close'] - 1
 
-        # Классификация
+        # РљР»Р°СЃСЃРёС„РёРєР°С†РёСЏ
         target = pd.Series(index=df.index, dtype=int)
         target[future_returns < -threshold] = 0  # DOWN
         target[future_returns > threshold] = 2  # UP
@@ -452,38 +452,38 @@ class CryptoMLEngine:
             validation_split: float = 0.2
     ) -> Dict[str, Any]:
         """
-        Обучение моделей
+        РћР±СѓС‡РµРЅРёРµ РјРѕРґРµР»РµР№
 
         Args:
-            df: DataFrame с OHLCV данными
-            validation_split: Доля валидационной выборки
+            df: DataFrame СЃ OHLCV РґР°РЅРЅС‹РјРё
+            validation_split: Р”РѕР»СЏ РІР°Р»РёРґР°С†РёРѕРЅРЅРѕР№ РІС‹Р±РѕСЂРєРё
 
         Returns:
-            Словарь с метриками обучения
+            РЎР»РѕРІР°СЂСЊ СЃ РјРµС‚СЂРёРєР°РјРё РѕР±СѓС‡РµРЅРёСЏ
         """
         try:
             logger.logger.info("Starting model training")
 
-            # Создание признаков
+            # РЎРѕР·РґР°РЅРёРµ РїСЂРёР·РЅР°РєРѕРІ
             features = self.feature_engineering.create_features(df)
             X = self.feature_engineering.fit_transform(features)
 
-            # Подготовка целевой переменной
+            # РџРѕРґРіРѕС‚РѕРІРєР° С†РµР»РµРІРѕР№ РїРµСЂРµРјРµРЅРЅРѕР№
             y = self.prepare_target(df)
 
-            # Удаляем NaN
+            # РЈРґР°Р»СЏРµРј NaN
             mask = ~(np.isnan(X).any(axis=1) | y.isna())
             X = X[mask]
             y = y[mask].values
 
-            # Разделение на train/validation (временной сплит)
+            # Р Р°Р·РґРµР»РµРЅРёРµ РЅР° train/validation (РІСЂРµРјРµРЅРЅРѕР№ СЃРїР»РёС‚)
             split_idx = int(len(X) * (1 - validation_split))
             X_train, X_val = X[:split_idx], X[split_idx:]
             y_train, y_val = y[:split_idx], y[split_idx:]
 
             logger.logger.info(f"Training set: {X_train.shape}, Validation set: {X_val.shape}")
 
-            # Обучение XGBoost
+            # РћР±СѓС‡РµРЅРёРµ XGBoost
             start_time = datetime.utcnow()
             self.xgb_model = xgb.XGBClassifier(**self.xgb_params)
             self.xgb_model.fit(
@@ -494,7 +494,7 @@ class CryptoMLEngine:
             )
             xgb_time = (datetime.utcnow() - start_time).total_seconds()
 
-            # Предсказания XGBoost
+            # РџСЂРµРґСЃРєР°Р·Р°РЅРёСЏ XGBoost
             xgb_pred = self.xgb_model.predict(X_val)
             xgb_proba = self.xgb_model.predict_proba(X_val)
             xgb_accuracy = accuracy_score(y_val, xgb_pred)
@@ -503,7 +503,7 @@ class CryptoMLEngine:
             metrics_collector.ml_training_time.labels(model="xgboost").observe(xgb_time)
             metrics_collector.ml_accuracy.labels(model="xgboost").set(xgb_accuracy)
 
-            # Обучение LightGBM
+            # РћР±СѓС‡РµРЅРёРµ LightGBM
             start_time = datetime.utcnow()
             self.lgb_model = lgb.LGBMClassifier(**self.lgb_params)
             self.lgb_model.fit(
@@ -513,7 +513,7 @@ class CryptoMLEngine:
             )
             lgb_time = (datetime.utcnow() - start_time).total_seconds()
 
-            # Предсказания LightGBM
+            # РџСЂРµРґСЃРєР°Р·Р°РЅРёСЏ LightGBM
             lgb_pred = self.lgb_model.predict(X_val)
             lgb_proba = self.lgb_model.predict_proba(X_val)
             lgb_accuracy = accuracy_score(y_val, lgb_pred)
@@ -522,7 +522,7 @@ class CryptoMLEngine:
             metrics_collector.ml_training_time.labels(model="lightgbm").observe(lgb_time)
             metrics_collector.ml_accuracy.labels(model="lightgbm").set(lgb_accuracy)
 
-            # Ансамблевые предсказания
+            # РђРЅСЃР°РјР±Р»РµРІС‹Рµ РїСЂРµРґСЃРєР°Р·Р°РЅРёСЏ
             ensemble_proba = (
                     self.ensemble_weights['xgboost'] * xgb_proba +
                     self.ensemble_weights['lightgbm'] * lgb_proba
@@ -533,7 +533,7 @@ class CryptoMLEngine:
             logger.logger.info(f"Ensemble accuracy: {ensemble_accuracy:.4f}")
             metrics_collector.ml_accuracy.labels(model="ensemble").set(ensemble_accuracy)
 
-            # Дополнительные метрики
+            # Р”РѕРїРѕР»РЅРёС‚РµР»СЊРЅС‹Рµ РјРµС‚СЂРёРєРё
             metrics = {
                 'xgboost': {
                     'accuracy': xgb_accuracy,
@@ -557,10 +557,10 @@ class CryptoMLEngine:
                 }
             }
 
-            # Важность признаков
+            # Р’Р°Р¶РЅРѕСЃС‚СЊ РїСЂРёР·РЅР°РєРѕРІ
             feature_importance = self._get_feature_importance()
 
-            # Сохранение моделей
+            # РЎРѕС…СЂР°РЅРµРЅРёРµ РјРѕРґРµР»РµР№
             await self.save_models()
 
             self.last_training_time = datetime.utcnow()
@@ -573,7 +573,7 @@ class CryptoMLEngine:
             }
 
         except Exception as e:
-            logger.log_error(e, {"context": "Model training failed"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Model training failed"}")
             raise
 
     async def predict(
@@ -582,40 +582,40 @@ class CryptoMLEngine:
             return_proba: bool = True
     ) -> Dict[str, Any]:
         """
-        Предсказание на новых данных
+        РџСЂРµРґСЃРєР°Р·Р°РЅРёРµ РЅР° РЅРѕРІС‹С… РґР°РЅРЅС‹С…
 
         Args:
-            df: DataFrame с OHLCV данными
-            return_proba: Возвращать вероятности классов
+            df: DataFrame СЃ OHLCV РґР°РЅРЅС‹РјРё
+            return_proba: Р’РѕР·РІСЂР°С‰Р°С‚СЊ РІРµСЂРѕСЏС‚РЅРѕСЃС‚Рё РєР»Р°СЃСЃРѕРІ
 
         Returns:
-            Словарь с предсказаниями
+            РЎР»РѕРІР°СЂСЊ СЃ РїСЂРµРґСЃРєР°Р·Р°РЅРёСЏРјРё
         """
         if not self.xgb_model or not self.lgb_model:
             raise ValueError("Models not trained. Call train() first.")
 
         try:
-            # Создание признаков
+            # РЎРѕР·РґР°РЅРёРµ РїСЂРёР·РЅР°РєРѕРІ
             features = self.feature_engineering.create_features(df)
             X = self.feature_engineering.transform(features)
 
-            # Предсказания XGBoost
+            # РџСЂРµРґСЃРєР°Р·Р°РЅРёСЏ XGBoost
             xgb_proba = self.xgb_model.predict_proba(X[-1:])
 
-            # Предсказания LightGBM
+            # РџСЂРµРґСЃРєР°Р·Р°РЅРёСЏ LightGBM
             lgb_proba = self.lgb_model.predict_proba(X[-1:])
 
-            # Ансамбль
+            # РђРЅСЃР°РјР±Р»СЊ
             ensemble_proba = (
                     self.ensemble_weights['xgboost'] * xgb_proba +
                     self.ensemble_weights['lightgbm'] * lgb_proba
             )[0]
 
-            # Класс с максимальной вероятностью
+            # РљР»Р°СЃСЃ СЃ РјР°РєСЃРёРјР°Р»СЊРЅРѕР№ РІРµСЂРѕСЏС‚РЅРѕСЃС‚СЊСЋ
             prediction = np.argmax(ensemble_proba)
             confidence = ensemble_proba[prediction]
 
-            # Записываем метрики
+            # Р—Р°РїРёСЃС‹РІР°РµРј РјРµС‚СЂРёРєРё
             metrics_collector.ml_predictions.labels(
                 model="ensemble",
                 prediction_type=["DOWN", "NEUTRAL", "UP"][prediction]
@@ -651,29 +651,29 @@ class CryptoMLEngine:
             return result
 
         except Exception as e:
-            logger.log_error(e, {"context": "Prediction failed"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Prediction failed"}")
             raise
 
     async def online_update(self, X_new: np.ndarray, y_new: int):
         """
-        Онлайн обновление модели
+        РћРЅР»Р°Р№РЅ РѕР±РЅРѕРІР»РµРЅРёРµ РјРѕРґРµР»Рё
 
         Args:
-            X_new: Новые признаки
-            y_new: Новая метка
+            X_new: РќРѕРІС‹Рµ РїСЂРёР·РЅР°РєРё
+            y_new: РќРѕРІР°СЏ РјРµС‚РєР°
         """
         if not settings.ml.ENABLE_ONLINE_LEARNING:
             return
 
-        # Добавляем в буфер
+        # Р”РѕР±Р°РІР»СЏРµРј РІ Р±СѓС„РµСЂ
         self.online_buffer.append((X_new, y_new))
 
-        # Обновляем если буфер заполнен
+        # РћР±РЅРѕРІР»СЏРµРј РµСЃР»Рё Р±СѓС„РµСЂ Р·Р°РїРѕР»РЅРµРЅ
         if len(self.online_buffer) >= self.online_buffer_size:
             X_batch = np.array([x for x, _ in self.online_buffer])
             y_batch = np.array([y for _, y in self.online_buffer])
 
-            # Частичное обучение XGBoost
+            # Р§Р°СЃС‚РёС‡РЅРѕРµ РѕР±СѓС‡РµРЅРёРµ XGBoost
             if self.xgb_model:
                 self.xgb_model.fit(
                     X_batch, y_batch,
@@ -681,8 +681,8 @@ class CryptoMLEngine:
                     verbose=False
                 )
 
-            # LightGBM не поддерживает инкрементальное обучение напрямую,
-            # но можно использовать init_model
+            # LightGBM РЅРµ РїРѕРґРґРµСЂР¶РёРІР°РµС‚ РёРЅРєСЂРµРјРµРЅС‚Р°Р»СЊРЅРѕРµ РѕР±СѓС‡РµРЅРёРµ РЅР°РїСЂСЏРјСѓСЋ,
+            # РЅРѕ РјРѕР¶РЅРѕ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ init_model
             if self.lgb_model:
                 self.lgb_model.fit(
                     X_batch, y_batch,
@@ -690,13 +690,13 @@ class CryptoMLEngine:
                     keep_training_booster=True
                 )
 
-            # Очищаем буфер, оставляя последние элементы
+            # РћС‡РёС‰Р°РµРј Р±СѓС„РµСЂ, РѕСЃС‚Р°РІР»СЏСЏ РїРѕСЃР»РµРґРЅРёРµ СЌР»РµРјРµРЅС‚С‹
             self.online_buffer = self.online_buffer[-25:]
 
             logger.logger.info("Models updated with online learning")
 
     def _get_feature_importance(self, top_n: int = 50) -> Dict[str, float]:
-        """Получение важности признаков"""
+        """РџРѕР»СѓС‡РµРЅРёРµ РІР°Р¶РЅРѕСЃС‚Рё РїСЂРёР·РЅР°РєРѕРІ"""
         importance = {}
 
         if self.xgb_model:
@@ -713,20 +713,20 @@ class CryptoMLEngine:
                     self.feature_engineering.feature_names) else f"feature_{i}"
                 importance[feat_name] = importance.get(feat_name, 0) + imp * self.ensemble_weights['lightgbm']
 
-        # Сортировка и возврат топ признаков
+        # РЎРѕСЂС‚РёСЂРѕРІРєР° Рё РІРѕР·РІСЂР°С‚ С‚РѕРї РїСЂРёР·РЅР°РєРѕРІ
         sorted_importance = dict(sorted(importance.items(), key=lambda x: x[1], reverse=True)[:top_n])
 
         return sorted_importance
 
     async def save_models(self):
-        """Сохранение моделей на диск"""
+        """РЎРѕС…СЂР°РЅРµРЅРёРµ РјРѕРґРµР»РµР№ РЅР° РґРёСЃРє"""
         try:
             # XGBoost
             if self.xgb_model:
                 xgb_path = self.models_path / f"xgboost_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pkl"
                 joblib.dump(self.xgb_model, xgb_path)
 
-                # Сохраняем также последнюю версию
+                # РЎРѕС…СЂР°РЅСЏРµРј С‚Р°РєР¶Рµ РїРѕСЃР»РµРґРЅСЋСЋ РІРµСЂСЃРёСЋ
                 joblib.dump(self.xgb_model, self.models_path / "xgboost_latest.pkl")
 
             # LightGBM
@@ -742,10 +742,10 @@ class CryptoMLEngine:
             logger.logger.info("Models saved successfully")
 
         except Exception as e:
-            logger.log_error(e, {"context": "Failed to save models"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Failed to save models"}")
 
     async def load_models(self):
-        """Загрузка моделей с диска"""
+        """Р—Р°РіСЂСѓР·РєР° РјРѕРґРµР»РµР№ СЃ РґРёСЃРєР°"""
         try:
             xgb_path = self.models_path / "xgboost_latest.pkl"
             if xgb_path.exists():
@@ -763,10 +763,10 @@ class CryptoMLEngine:
                 logger.logger.info("Feature scaler loaded")
 
         except Exception as e:
-            logger.log_error(e, {"context": "Failed to load models"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Failed to load models"}")
 
     def should_retrain(self) -> bool:
-        """Проверка необходимости переобучения"""
+        """РџСЂРѕРІРµСЂРєР° РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё РїРµСЂРµРѕР±СѓС‡РµРЅРёСЏ"""
         if not self.last_training_time:
             return True
 
@@ -774,13 +774,13 @@ class CryptoMLEngine:
         return hours_since_training >= settings.ml.RETRAIN_INTERVAL_HOURS
 
 
-# Глобальный экземпляр
+# Р“Р»РѕР±Р°Р»СЊРЅС‹Р№ СЌРєР·РµРјРїР»СЏСЂ
 ml_engine = CryptoMLEngine()
 
 
-# Вспомогательные функции
+# Р’СЃРїРѕРјРѕРіР°С‚РµР»СЊРЅС‹Рµ С„СѓРЅРєС†РёРё
 async def init_ml_engine():
-    """Инициализация ML движка"""
+    """РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ ML РґРІРёР¶РєР°"""
     await ml_engine.load_models()
     logger.logger.info("ML Engine initialized")
     return ml_engine

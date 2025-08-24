@@ -10,10 +10,6 @@ from pydantic import SecretStr, Field, validator
 from pydantic.types import PositiveFloat, PositiveInt
 from enum import Enum
 
-# Загружаем .env файл в начале
-from dotenv import load_dotenv
-load_dotenv()
-
 
 class Environment(str, Enum):
     """Окружения запуска"""
@@ -38,8 +34,8 @@ class TradingMode(str, Enum):
 
 class APISettings(BaseSettings):
     """Настройки API биржи"""
-    BINANCE_API_KEY: SecretStr = Field(default=SecretStr("test_api_key"))
-    BINANCE_API_SECRET: SecretStr = Field(default=SecretStr("test_api_secret"))
+    BINANCE_API_KEY: SecretStr
+    BINANCE_API_SECRET: SecretStr
     TESTNET: bool = True
 
     # Endpoints
@@ -58,9 +54,6 @@ class APISettings(BaseSettings):
 
     class Config:
         env_prefix = "API_"
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "allow"
 
 
 class DatabaseSettings(BaseSettings):
@@ -70,7 +63,7 @@ class DatabaseSettings(BaseSettings):
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "trading_bot"
     POSTGRES_USER: str = "trader"
-    POSTGRES_PASSWORD: SecretStr = Field(default=SecretStr("trading_password_123"))
+    POSTGRES_PASSWORD: SecretStr
 
     # Redis
     REDIS_HOST: str = "localhost"
@@ -99,9 +92,6 @@ class DatabaseSettings(BaseSettings):
 
     class Config:
         env_prefix = "DB_"
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "allow"
 
 
 class TradingSettings(BaseSettings):
@@ -139,14 +129,14 @@ class TradingSettings(BaseSettings):
     )
 
     # Таймфреймы для анализа
-    TIMEFRAMES: List[str] = Field(default=["5m", "15m", "1h", "4h"])
+    TIMEFRAMES: List[str] = ["5m", "15m", "1h", "4h"]
     PRIMARY_TIMEFRAME: str = "15m"
 
     # Торговые пары
-    SYMBOLS: List[str] = Field(default=[
+    SYMBOLS: List[str] = [
         "BTCUSDT", "ETHUSDT", "BNBUSDT",
         "ADAUSDT", "SOLUSDT", "DOTUSDT"
-    ])
+    ]
 
     # Время торговли (UTC)
     TRADING_HOURS: Optional[Dict[str, Any]] = Field(
@@ -156,9 +146,6 @@ class TradingSettings(BaseSettings):
 
     class Config:
         env_prefix = "TRADING_"
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "allow"
 
 
 class MLSettings(BaseSettings):
@@ -188,9 +175,6 @@ class MLSettings(BaseSettings):
 
     class Config:
         env_prefix = "ML_"
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "allow"
 
 
 class SignalSettings(BaseSettings):
@@ -218,9 +202,6 @@ class SignalSettings(BaseSettings):
 
     class Config:
         env_prefix = "SIGNAL_"
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "allow"
 
 
 class MonitoringSettings(BaseSettings):
@@ -244,9 +225,6 @@ class MonitoringSettings(BaseSettings):
 
     class Config:
         env_prefix = "MONITORING_"
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "allow"
 
 
 class Settings(BaseSettings):
@@ -261,55 +239,19 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     DEBUG: bool = False
 
-    # Подмодули настроек - lazy loading через свойства
-    _api: Optional[APISettings] = None
-    _database: Optional[DatabaseSettings] = None
-    _trading: Optional[TradingSettings] = None
-    _ml: Optional[MLSettings] = None
-    _signals: Optional[SignalSettings] = None
-    _monitoring: Optional[MonitoringSettings] = None
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    trading: TradingSettings = Field(default_factory=TradingSettings)
+    ml: MLSettings = Field(default_factory=MLSettings)
+    signals: SignalSettings = Field(default_factory=SignalSettings)
+    monitoring: MonitoringSettings = Field(default_factory=MonitoringSettings)
 
-    @property
-    def api(self) -> APISettings:
-        """Получить настройки API"""
-        if self._api is None:
-            self._api = APISettings()
-        return self._api
-
-    @property
-    def database(self) -> DatabaseSettings:
-        """Получить настройки базы данных"""
-        if self._database is None:
-            self._database = DatabaseSettings()
-        return self._database
-
-    @property
-    def trading(self) -> TradingSettings:
-        """Получить настройки торговли"""
-        if self._trading is None:
-            self._trading = TradingSettings()
-        return self._trading
-
-    @property
-    def ml(self) -> MLSettings:
-        """Получить настройки ML"""
-        if self._ml is None:
-            self._ml = MLSettings()
-        return self._ml
-
-    @property
-    def signals(self) -> SignalSettings:
-        """Получить настройки сигналов"""
-        if self._signals is None:
-            self._signals = SignalSettings()
-        return self._signals
-
-    @property
-    def monitoring(self) -> MonitoringSettings:
-        """Получить настройки мониторинга"""
-        if self._monitoring is None:
-            self._monitoring = MonitoringSettings()
-        return self._monitoring
+    # Подмодули настроек
+    api: APISettings = Field(default_factory=APISettings)
+    database: DatabaseSettings = DatabaseSettings()
+    trading: TradingSettings = TradingSettings()
+    ml: MLSettings = MLSettings()
+    signals: SignalSettings = SignalSettings()
+    monitoring: MonitoringSettings = MonitoringSettings()
 
     # Интервалы обновления (секунды)
     MARKET_UPDATE_INTERVAL: int = 1
@@ -341,7 +283,6 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
-        extra = "ignore"  # Игнорируем дополнительные поля из подмодулей
 
 
 # Singleton instance
@@ -363,6 +304,8 @@ def is_paper_trading() -> bool:
     """Проверка на paper trading режим"""
     return settings.BOT_MODE == BotMode.PAPER
 
+# Singleton instance
+settings = Settings(_env_file='.env', _env_file_encoding='utf-8')
 
 def is_live_trading() -> bool:
     """Проверка на live trading режим"""

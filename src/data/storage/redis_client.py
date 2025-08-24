@@ -44,7 +44,7 @@ class RedisClient:
             logger.logger.info("Redis connected", url=self.url)
 
         except Exception as e:
-            logger.log_error(e, {"context": "Redis connection failed"})
+            logger.logger.error(f"Redis connection failed: {e}")
             raise
 
     async def disconnect(self):
@@ -79,7 +79,7 @@ class RedisClient:
             return bool(result)
 
         except Exception as e:
-            logger.log_error(e, {"context": "Redis set", "key": key})
+            logger.logger.error(f"Redis set error for key {key}: {e}")
             return False
 
     async def get(self, key: str, default: Any = None) -> Any:
@@ -102,7 +102,7 @@ class RedisClient:
                 return value
 
         except Exception as e:
-            logger.log_error(e, {"context": "Redis get", "key": key})
+            logger.logger.error(f"Redis get error for key {key}: {e}")
             return default
 
     async def delete(self, *keys: str) -> int:

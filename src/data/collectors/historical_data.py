@@ -1,13 +1,13 @@
-# src/data/collectors/historical_data.py
+﻿# src/data/collectors/historical_data.py
 """
-Сборщик исторических данных с Binance с поддержкой
-мультитаймфреймов и расчётом индикаторов
+РЎР±РѕСЂС‰РёРє РёСЃС‚РѕСЂРёС‡РµСЃРєРёС… РґР°РЅРЅС‹С… СЃ Binance СЃ РїРѕРґРґРµСЂР¶РєРѕР№
+РјСѓР»СЊС‚РёС‚Р°Р№РјС„СЂРµР№РјРѕРІ Рё СЂР°СЃС‡С‘С‚РѕРј РёРЅРґРёРєР°С‚РѕСЂРѕРІ
 """
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
-from binance.client import AsyncClient
+from binance import AsyncClient
 import talib as ta
 from src.monitoring.logger import logger, log_performance
 from src.data.storage.redis_client import cache_manager
@@ -15,20 +15,20 @@ from src.config.settings import settings
 
 
 class HistoricalDataCollector:
-    """Сборщик исторических данных"""
+    """РЎР±РѕСЂС‰РёРє РёСЃС‚РѕСЂРёС‡РµСЃРєРёС… РґР°РЅРЅС‹С…"""
 
     def __init__(self):
         self.client: Optional[AsyncClient] = None
         self.symbol_info_cache: Dict[str, Dict] = {}
 
     async def initialize(self, client: AsyncClient):
-        """Инициализация с клиентом Binance"""
+        """РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ СЃ РєР»РёРµРЅС‚РѕРј Binance"""
         self.client = client
         await self._load_symbol_info()
         logger.logger.info("Historical data collector initialized")
 
     async def _load_symbol_info(self):
-        """Загрузка информации о символах"""
+        """Р—Р°РіСЂСѓР·РєР° РёРЅС„РѕСЂРјР°С†РёРё Рѕ СЃРёРјРІРѕР»Р°С…"""
         try:
             if settings.TRADING_MODE.value == "futures":
                 info = await self.client.futures_exchange_info()
@@ -41,7 +41,7 @@ class HistoricalDataCollector:
 
                 symbol = symbol_info["symbol"]
 
-                # Извлекаем важную информацию
+                # РР·РІР»РµРєР°РµРј РІР°Р¶РЅСѓСЋ РёРЅС„РѕСЂРјР°С†РёСЋ
                 filters = {f["filterType"]: f for f in symbol_info["filters"]}
 
                 self.symbol_info_cache[symbol] = {
@@ -57,7 +57,7 @@ class HistoricalDataCollector:
             logger.logger.info(f"Loaded info for {len(self.symbol_info_cache)} symbols")
 
         except Exception as e:
-            logger.log_error(e, {"context": "Failed to load symbol info"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Failed to load symbol info"}")
 
     @log_performance("fetch_historical_data")
     @cache_manager.cache_result(ttl=300, prefix="historical")
@@ -69,23 +69,23 @@ class HistoricalDataCollector:
             limit: int = 1000
     ) -> pd.DataFrame:
         """
-        Получение исторических данных
+        РџРѕР»СѓС‡РµРЅРёРµ РёСЃС‚РѕСЂРёС‡РµСЃРєРёС… РґР°РЅРЅС‹С…
 
         Args:
-            symbol: Торговая пара (например, BTCUSDT)
-            interval: Интервал свечей (1m, 5m, 15m, 1h, 4h, 1d)
-            days_back: Количество дней назад
-            limit: Максимальное количество свечей
+            symbol: РўРѕСЂРіРѕРІР°СЏ РїР°СЂР° (РЅР°РїСЂРёРјРµСЂ, BTCUSDT)
+            interval: РРЅС‚РµСЂРІР°Р» СЃРІРµС‡РµР№ (1m, 5m, 15m, 1h, 4h, 1d)
+            days_back: РљРѕР»РёС‡РµСЃС‚РІРѕ РґРЅРµР№ РЅР°Р·Р°Рґ
+            limit: РњР°РєСЃРёРјР°Р»СЊРЅРѕРµ РєРѕР»РёС‡РµСЃС‚РІРѕ СЃРІРµС‡РµР№
 
         Returns:
-            DataFrame с OHLCV данными и индикаторами
+            DataFrame СЃ OHLCV РґР°РЅРЅС‹РјРё Рё РёРЅРґРёРєР°С‚РѕСЂР°РјРё
         """
         try:
-            # Расчёт временных меток
+            # Р Р°СЃС‡С‘С‚ РІСЂРµРјРµРЅРЅС‹С… РјРµС‚РѕРє
             end_time = datetime.utcnow()
             start_time = end_time - timedelta(days=days_back)
 
-            # Получение данных с Binance
+            # РџРѕР»СѓС‡РµРЅРёРµ РґР°РЅРЅС‹С… СЃ Binance
             if settings.TRADING_MODE.value == "futures":
                 klines = await self.client.futures_klines(
                     symbol=symbol,
@@ -103,28 +103,28 @@ class HistoricalDataCollector:
                     limit=limit
                 )
 
-            # Преобразование в DataFrame
+            # РџСЂРµРѕР±СЂР°Р·РѕРІР°РЅРёРµ РІ DataFrame
             df = pd.DataFrame(klines, columns=[
                 "open_time", "open", "high", "low", "close", "volume",
                 "close_time", "quote_asset_volume", "trades",
                 "taker_buy_base", "taker_buy_quote", "ignore"
             ])
 
-            # Конвертация типов
+            # РљРѕРЅРІРµСЂС‚Р°С†РёСЏ С‚РёРїРѕРІ
             numeric_columns = ["open", "high", "low", "close", "volume",
                                "quote_asset_volume", "taker_buy_base", "taker_buy_quote"]
             df[numeric_columns] = df[numeric_columns].astype(float)
             df["trades"] = df["trades"].astype(int)
 
-            # Временные метки
+            # Р’СЂРµРјРµРЅРЅС‹Рµ РјРµС‚РєРё
             df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
             df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
             df.set_index("open_time", inplace=True)
 
-            # Добавление индикаторов
+            # Р”РѕР±Р°РІР»РµРЅРёРµ РёРЅРґРёРєР°С‚РѕСЂРѕРІ
             self._add_indicators(df)
 
-            # Добавление рыночной микроструктуры
+            # Р”РѕР±Р°РІР»РµРЅРёРµ СЂС‹РЅРѕС‡РЅРѕР№ РјРёРєСЂРѕСЃС‚СЂСѓРєС‚СѓСЂС‹
             self._add_market_microstructure(df)
 
             logger.logger.debug(
@@ -145,9 +145,9 @@ class HistoricalDataCollector:
             raise
 
     def _add_indicators(self, df: pd.DataFrame):
-        """Добавление технических индикаторов"""
+        """Р”РѕР±Р°РІР»РµРЅРёРµ С‚РµС…РЅРёС‡РµСЃРєРёС… РёРЅРґРёРєР°С‚РѕСЂРѕРІ"""
         try:
-            # Проверка минимального количества данных
+            # РџСЂРѕРІРµСЂРєР° РјРёРЅРёРјР°Р»СЊРЅРѕРіРѕ РєРѕР»РёС‡РµСЃС‚РІР° РґР°РЅРЅС‹С…
             if len(df) < 50:
                 logger.logger.warning("Not enough data for indicators calculation")
                 return
@@ -224,41 +224,41 @@ class HistoricalDataCollector:
             df["roc"] = ta.ROC(df["close"], timeperiod=10)
 
         except Exception as e:
-            logger.log_error(e, {"context": "Failed to calculate indicators"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Failed to calculate indicators"}")
 
     def _add_market_microstructure(self, df: pd.DataFrame):
-        """Добавление метрик рыночной микроструктуры"""
+        """Р”РѕР±Р°РІР»РµРЅРёРµ РјРµС‚СЂРёРє СЂС‹РЅРѕС‡РЅРѕР№ РјРёРєСЂРѕСЃС‚СЂСѓРєС‚СѓСЂС‹"""
         try:
-            # Спред
+            # РЎРїСЂРµРґ
             df["spread"] = df["high"] - df["low"]
             df["spread_percent"] = df["spread"] / df["close"] * 100
 
-            # Объёмные метрики
+            # РћР±СЉС‘РјРЅС‹Рµ РјРµС‚СЂРёРєРё
             df["volume_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
             df["volume_delta"] = df["taker_buy_base"] - (df["volume"] - df["taker_buy_base"])
             df["buy_pressure"] = df["taker_buy_base"] / df["volume"]
 
-            # Ценовые уровни
+            # Р¦РµРЅРѕРІС‹Рµ СѓСЂРѕРІРЅРё
             df["distance_from_high"] = (df["high"] - df["close"]) / df["close"] * 100
             df["distance_from_low"] = (df["close"] - df["low"]) / df["close"] * 100
 
-            # Моментум
+            # РњРѕРјРµРЅС‚СѓРј
             df["momentum_1"] = df["close"].pct_change(1)
             df["momentum_5"] = df["close"].pct_change(5)
             df["momentum_10"] = df["close"].pct_change(10)
 
-            # Эффективность движения
+            # Р­С„С„РµРєС‚РёРІРЅРѕСЃС‚СЊ РґРІРёР¶РµРЅРёСЏ
             df["efficiency_ratio"] = abs(df["close"].diff(10)) / df["spread"].rolling(10).sum()
 
             # VWAP
             df["vwap"] = (df["close"] * df["volume"]).cumsum() / df["volume"].cumsum()
             df["vwap_distance"] = (df["close"] - df["vwap"]) / df["vwap"] * 100
 
-            # Накопление/распределение
+            # РќР°РєРѕРїР»РµРЅРёРµ/СЂР°СЃРїСЂРµРґРµР»РµРЅРёРµ
             df["accumulation"] = ((df["close"] - df["low"]) - (df["high"] - df["close"])) / df["spread"] * df["volume"]
 
         except Exception as e:
-            logger.log_error(e, {"context": "Failed to calculate market microstructure"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Failed to calculate market microstructure"}")
 
     async def fetch_multi_timeframe_data(
             self,
@@ -267,15 +267,15 @@ class HistoricalDataCollector:
             days_back: int = 2
     ) -> Dict[str, pd.DataFrame]:
         """
-        Получение данных для нескольких таймфреймов
+        РџРѕР»СѓС‡РµРЅРёРµ РґР°РЅРЅС‹С… РґР»СЏ РЅРµСЃРєРѕР»СЊРєРёС… С‚Р°Р№РјС„СЂРµР№РјРѕРІ
 
         Args:
-            symbol: Торговая пара
-            timeframes: Список таймфреймов (по умолчанию из настроек)
-            days_back: Количество дней назад
+            symbol: РўРѕСЂРіРѕРІР°СЏ РїР°СЂР°
+            timeframes: РЎРїРёСЃРѕРє С‚Р°Р№РјС„СЂРµР№РјРѕРІ (РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ РёР· РЅР°СЃС‚СЂРѕРµРє)
+            days_back: РљРѕР»РёС‡РµСЃС‚РІРѕ РґРЅРµР№ РЅР°Р·Р°Рґ
 
         Returns:
-            Словарь {timeframe: DataFrame}
+            РЎР»РѕРІР°СЂСЊ {timeframe: DataFrame}
         """
         if timeframes is None:
             timeframes = settings.trading.TIMEFRAMES
@@ -292,7 +292,7 @@ class HistoricalDataCollector:
         return data
 
     async def get_latest_candle(self, symbol: str, interval: str) -> Optional[Dict]:
-        """Получение последней свечи"""
+        """РџРѕР»СѓС‡РµРЅРёРµ РїРѕСЃР»РµРґРЅРµР№ СЃРІРµС‡Рё"""
         try:
             df = await self.fetch_historical_data(symbol, interval, days_back=1, limit=2)
             if not df.empty:
@@ -309,12 +309,12 @@ class HistoricalDataCollector:
                     "timestamp": latest.name.isoformat()
                 }
         except Exception as e:
-            logger.log_error(e, {"context": "Failed to get latest candle"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Failed to get latest candle"}")
 
         return None
 
     def round_price(self, price: float, symbol: str) -> float:
-        """Округление цены согласно правилам биржи"""
+        """РћРєСЂСѓРіР»РµРЅРёРµ С†РµРЅС‹ СЃРѕРіР»Р°СЃРЅРѕ РїСЂР°РІРёР»Р°Рј Р±РёСЂР¶Рё"""
         info = self.symbol_info_cache.get(symbol, {})
         tick_size = info.get("tickSize", 0.01)
 
@@ -325,7 +325,7 @@ class HistoricalDataCollector:
         return round(price, precision)
 
     def round_quantity(self, quantity: float, symbol: str) -> float:
-        """Округление количества согласно правилам биржи"""
+        """РћРєСЂСѓРіР»РµРЅРёРµ РєРѕР»РёС‡РµСЃС‚РІР° СЃРѕРіР»Р°СЃРЅРѕ РїСЂР°РІРёР»Р°Рј Р±РёСЂР¶Рё"""
         info = self.symbol_info_cache.get(symbol, {})
         step_size = info.get("stepSize", 0.001)
 
@@ -342,7 +342,7 @@ class HistoricalDataCollector:
             price: float
     ) -> Tuple[bool, Optional[str]]:
         """
-        Валидация параметров ордера
+        Р’Р°Р»РёРґР°С†РёСЏ РїР°СЂР°РјРµС‚СЂРѕРІ РѕСЂРґРµСЂР°
 
         Returns:
             (valid, error_message)
@@ -351,17 +351,17 @@ class HistoricalDataCollector:
         if not info:
             return False, f"No symbol info for {symbol}"
 
-        # Проверка минимального количества
+        # РџСЂРѕРІРµСЂРєР° РјРёРЅРёРјР°Р»СЊРЅРѕРіРѕ РєРѕР»РёС‡РµСЃС‚РІР°
         min_qty = info.get("minQty", 0)
         if quantity < min_qty:
             return False, f"Quantity {quantity} below minimum {min_qty}"
 
-        # Проверка максимального количества
+        # РџСЂРѕРІРµСЂРєР° РјР°РєСЃРёРјР°Р»СЊРЅРѕРіРѕ РєРѕР»РёС‡РµСЃС‚РІР°
         max_qty = info.get("maxQty", float("inf"))
         if quantity > max_qty:
             return False, f"Quantity {quantity} above maximum {max_qty}"
 
-        # Проверка минимального нотионала
+        # РџСЂРѕРІРµСЂРєР° РјРёРЅРёРјР°Р»СЊРЅРѕРіРѕ РЅРѕС‚РёРѕРЅР°Р»Р°
         min_notional = info.get("minNotional", 0)
         notional = quantity * price
         if notional < min_notional:

@@ -31,6 +31,14 @@ from src.utils.banner import print_banner
 
 # Импортируем боты только при необходимости
 try:
+    from src.bots.advanced_paper_bot import AdvancedPaperTradingBot
+
+    ADVANCED_BOT_AVAILABLE = True
+except ImportError:
+    ADVANCED_BOT_AVAILABLE = False
+    AdvancedPaperTradingBot = None
+
+try:
     from src.bots.paper_trading_bot_v5 import EnhancedPaperTradingBotV5
 except ImportError:
     EnhancedPaperTradingBotV5 = None
@@ -96,6 +104,26 @@ class Application:
                 return False
             logger.logger.info("✅ API credentials configured")
 
+        # Проверка зависимостей для продвинутого бота
+        if ADVANCED_BOT_AVAILABLE:
+            logger.logger.info("✅ Advanced trading bot available")
+
+            # Проверяем дополнительные зависимости
+            try:
+                import binance
+                logger.logger.info("✅ Binance library installed")
+            except ImportError:
+                logger.logger.warning("⚠️ Binance library not installed - advanced features limited")
+
+            try:
+                import xgboost
+                import lightgbm
+                logger.logger.info("✅ ML libraries installed")
+            except ImportError:
+                logger.logger.warning("⚠️ ML libraries not installed - ML features disabled")
+        else:
+            logger.logger.warning("⚠️ Advanced bot not available - using basic paper trading")
+
         return True
 
     async def initialize_bot(self):
@@ -112,27 +140,68 @@ class Application:
 
         elif mode == BotMode.PAPER:
             # Paper trading
-            if EnhancedPaperTradingBotV5 is None:
-                raise ImportError("Paper trading bot not available")
+            # Сначала пытаемся использовать продвинутый бот
+            if ADVANCED_BOT_AVAILABLE:
+                try:
+                    logger.logger.info("Initializing Advanced Paper Trading Bot...")
 
-            self.bot = EnhancedPaperTradingBotV5(
-                initial_balance=settings.PAPER_STARTING_BALANCE,
-                maker_fee=settings.PAPER_MAKER_FEE,
-                taker_fee=settings.PAPER_TAKER_FEE,
-                slippage_bps=settings.PAPER_SLIPPAGE_BPS
-            )
+                    self.bot = AdvancedPaperTradingBot(
+                        initial_balance=settings.PAPER_STARTING_BALANCE,
+                        maker_fee=settings.PAPER_MAKER_FEE,
+                        taker_fee=settings.PAPER_TAKER_FEE,
+                        slippage_bps=settings.PAPER_SLIPPAGE_BPS
+                    )
 
-            try:
-                await self.bot.initialize()
-                logger.logger.info("✅ Paper trading bot initialized")
-            except Exception as e:
-                logger.logger.error(f"Failed to initialize paper trading bot: {e}")
-                raise
+                    await self.bot.initialize()
+                    logger.logger.info("✅ Advanced Paper Trading Bot initialized")
+                    logger.logger.info("Bot features: Real-time data, ML predictions, Multi-strategy signals")
+
+                except Exception as e:
+                    logger.logger.error(f"Failed to initialize advanced bot: {e}")
+                    logger.logger.info("Falling back to basic paper trading bot...")
+
+                    # Откат на базовый бот
+                    if EnhancedPaperTradingBotV5 is None:
+                        raise ImportError("No paper trading bot available")
+
+                    self.bot = EnhancedPaperTradingBotV5(
+                        initial_balance=settings.PAPER_STARTING_BALANCE,
+                        maker_fee=settings.PAPER_MAKER_FEE,
+                        taker_fee=settings.PAPER_TAKER_FEE,
+                        slippage_bps=settings.PAPER_SLIPPAGE_BPS
+                    )
+
+                    await self.bot.initialize()
+                    logger.logger.info("✅ Basic Paper Trading Bot initialized")
+
+            else:
+                # Используем базовый бот если продвинутый недоступен
+                if EnhancedPaperTradingBotV5 is None:
+                    raise ImportError("Paper trading bot not available")
+
+                self.bot = EnhancedPaperTradingBotV5(
+                    initial_balance=settings.PAPER_STARTING_BALANCE,
+                    maker_fee=settings.PAPER_MAKER_FEE,
+                    taker_fee=settings.PAPER_TAKER_FEE,
+                    slippage_bps=settings.PAPER_SLIPPAGE_BPS
+                )
+
+                try:
+                    await self.bot.initialize()
+                    logger.logger.info("✅ Paper trading bot initialized")
+                except Exception as e:
+                    logger.logger.error(f"Failed to initialize paper trading bot: {e}")
+                    raise
 
         elif mode == BotMode.LIVE:
             # Live trading
             if settings.ENVIRONMENT.value != "production":
                 logger.logger.warning("⚠️ Live trading in non-production environment!")
+                logger.logger.warning("⚠️ THIS IS REAL MONEY - ARE YOU SURE?")
+
+                # Добавляем задержку для безопасности
+                logger.logger.info("Starting in 10 seconds... Press Ctrl+C to cancel")
+                await asyncio.sleep(10)
 
             if TradingBot is None:
                 raise ImportError("Live trading bot not available")
@@ -140,6 +209,7 @@ class Application:
             self.bot = TradingBot()
             await self.bot.initialize()
             logger.logger.info("✅ Live trading bot initialized")
+            logger.logger.warning("⚠️ LIVE TRADING ACTIVE - Real money at risk!")
 
         else:
             raise ValueError(f"Unknown bot mode: {mode}")
@@ -151,6 +221,8 @@ class Application:
                 self.metrics_server = MetricsServer(port=settings.monitoring.PROMETHEUS_PORT)
                 await self.metrics_server.start()
                 logger.logger.info(f"✅ Metrics server started on port {settings.monitoring.PROMETHEUS_PORT}")
+                logger.logger.info(
+                    f"   Access metrics at: http://localhost:{settings.monitoring.PROMETHEUS_PORT}/metrics")
             except Exception as e:
                 logger.logger.warning(f"Failed to start metrics server: {e}")
         else:
@@ -190,6 +262,23 @@ class Application:
             if self.bot:
                 logger.logger.info("🚀 Starting bot main loop...")
 
+                # Выводим информацию о типе бота
+                bot_type = type(self.bot).__name__
+                logger.logger.info(f"Bot type: {bot_type}")
+
+                if bot_type == "AdvancedPaperTradingBot":
+                    logger.logger.info("Features enabled:")
+                    logger.logger.info("  • Real-time market data from Binance")
+                    logger.logger.info("  • Technical indicators (RSI, MACD, BB)")
+                    logger.logger.info("  • Machine Learning predictions")
+                    logger.logger.info("  • Advanced risk management")
+                    logger.logger.info("  • Multi-strategy signal generation")
+                    logger.logger.info("")
+                    logger.logger.info("Monitoring symbols: " + ", ".join(settings.trading.SYMBOLS[:3]))
+                    logger.logger.info(f"Primary timeframe: {settings.trading.PRIMARY_TIMEFRAME}")
+                    logger.logger.info("")
+                    logger.logger.info("Bot will start trading when strong signals are detected...")
+
                 # Создаем задачу для бота
                 bot_task = asyncio.create_task(self.bot.run())
 
@@ -222,7 +311,7 @@ class Application:
             logger.logger.info("Received keyboard interrupt")
         except Exception as e:
             logger.logger.error(f"Application run failed: {e}")
-            logger.log_error(e, {"context": "Application run failed"})
+            logger.logger.error(f"Error: {e}, context: Application run failed")
             raise
         finally:
             await self.cleanup()
@@ -297,13 +386,23 @@ async def main():
 
 if __name__ == "__main__":
     try:
+        # Выводим стартовое сообщение
+        print("\n" + "=" * 60)
+        print("CRYPTO TRADING BOT STARTING...")
+        print("=" * 60 + "\n")
+
         exit_code = asyncio.run(main())
+
         if exit_code == 0:
             print("\n✅ Shutdown complete")
+
         sys.exit(exit_code)
+
     except KeyboardInterrupt:
-        print("\n✅ Shutdown complete")
+        print("\n⚠️ Interrupted by user")
+        print("✅ Shutdown complete")
         sys.exit(0)
+
     except Exception as e:
         print(f"\n❌ Fatal error: {e}")
         sys.exit(1)

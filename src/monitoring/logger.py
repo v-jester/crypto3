@@ -109,8 +109,11 @@ class TradingLogger:
         self.logger.info("Trade executed", **trade_data)
 
         # Дополнительно сохраняем в отдельный файл сделок
-        with open("logs/trading/trades.jsonl", "a") as f:
-            f.write(json.dumps(trade_data) + "\n")
+        try:
+            with open("logs/trading/trades.jsonl", "a") as f:
+                f.write(json.dumps(trade_data) + "\n")
+        except Exception as e:
+            self.logger.warning(f"Failed to write trade to file: {e}")
 
     def log_signal(
             self,
@@ -140,8 +143,11 @@ class TradingLogger:
         self.logger.info("Signal generated", **signal_data)
 
         # Сохраняем историю сигналов
-        with open("logs/trading/signals.jsonl", "a") as f:
-            f.write(json.dumps(signal_data) + "\n")
+        try:
+            with open("logs/trading/signals.jsonl", "a") as f:
+                f.write(json.dumps(signal_data) + "\n")
+        except Exception as e:
+            self.logger.warning(f"Failed to write signal to file: {e}")
 
     def log_risk_event(
             self,
@@ -169,8 +175,11 @@ class TradingLogger:
 
         # Критические риск-события в отдельный файл
         if severity in ["ERROR", "CRITICAL"]:
-            with open("logs/errors/risk_events.jsonl", "a") as f:
-                f.write(json.dumps(risk_data) + "\n")
+            try:
+                with open("logs/errors/risk_events.jsonl", "a") as f:
+                    f.write(json.dumps(risk_data) + "\n")
+            except Exception as e:
+                self.logger.warning(f"Failed to write risk event to file: {e}")
 
     def log_performance(
             self,
@@ -192,24 +201,33 @@ class TradingLogger:
         self.logger.debug("Performance metric", **perf_data)
 
         # Сохраняем метрики производительности
-        with open("logs/performance/metrics.jsonl", "a") as f:
-            f.write(json.dumps(perf_data) + "\n")
+        try:
+            with open("logs/performance/metrics.jsonl", "a") as f:
+                f.write(json.dumps(perf_data) + "\n")
+        except Exception as e:
+            self.logger.warning(f"Failed to write performance metric to file: {e}")
 
     def log_error(self, error: Exception, context: Optional[Dict] = None):
-        """Логирование ошибок с контекстом"""
+        """Логирование ошибок с контекстом - ИСПРАВЛЕННЫЙ МЕТОД"""
         error_data = {
-            "event": "error",
             "error_type": type(error).__name__,
             "error_message": str(error),
-            "context": context or {},
             "timestamp": datetime.utcnow().isoformat(),
         }
 
+        # Добавляем контекст если есть
+        if context:
+            error_data.update(context)
+
+        # Логируем ошибку
         self.logger.error("Error occurred", exc_info=True, **error_data)
 
         # Сохраняем в файл ошибок
-        with open("logs/errors/errors.jsonl", "a") as f:
-            f.write(json.dumps(error_data) + "\n")
+        try:
+            with open("logs/errors/errors.jsonl", "a") as f:
+                f.write(json.dumps(error_data) + "\n")
+        except Exception as write_error:
+            self.logger.warning(f"Failed to write error to file: {write_error}")
 
 
 # Глобальный экземпляр логгера

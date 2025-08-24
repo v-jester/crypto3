@@ -1,7 +1,7 @@
-# src/risk/risk_manager.py
+﻿# src/risk/risk_manager.py
 """
-Комплексная система управления рисками для криптовалютного трейдинга
-Включает Van Tharp position sizing, динамические стоп-лоссы, контроль корреляций
+РљРѕРјРїР»РµРєСЃРЅР°СЏ СЃРёСЃС‚РµРјР° СѓРїСЂР°РІР»РµРЅРёСЏ СЂРёСЃРєР°РјРё РґР»СЏ РєСЂРёРїС‚РѕРІР°Р»СЋС‚РЅРѕРіРѕ С‚СЂРµР№РґРёРЅРіР°
+Р’РєР»СЋС‡Р°РµС‚ Van Tharp position sizing, РґРёРЅР°РјРёС‡РµСЃРєРёРµ СЃС‚РѕРї-Р»РѕСЃСЃС‹, РєРѕРЅС‚СЂРѕР»СЊ РєРѕСЂСЂРµР»СЏС†РёР№
 """
 import numpy as np
 import pandas as pd
@@ -15,7 +15,7 @@ from src.monitoring.metrics import metrics_collector
 
 
 class RiskLevel(Enum):
-    """Уровни риска"""
+    """РЈСЂРѕРІРЅРё СЂРёСЃРєР°"""
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -24,7 +24,7 @@ class RiskLevel(Enum):
 
 @dataclass
 class Position:
-    """Класс для хранения информации о позиции"""
+    """РљР»Р°СЃСЃ РґР»СЏ С…СЂР°РЅРµРЅРёСЏ РёРЅС„РѕСЂРјР°С†РёРё Рѕ РїРѕР·РёС†РёРё"""
     id: str
     symbol: str
     side: str  # BUY/SELL
@@ -40,7 +40,7 @@ class Position:
 
 @dataclass
 class RiskMetrics:
-    """Метрики риска портфеля"""
+    """РњРµС‚СЂРёРєРё СЂРёСЃРєР° РїРѕСЂС‚С„РµР»СЏ"""
     total_exposure: float
     current_drawdown: float
     max_drawdown: float
@@ -53,7 +53,7 @@ class RiskMetrics:
 
 
 class PositionSizer:
-    """Калькулятор размера позиции по методу Van Tharp"""
+    """РљР°Р»СЊРєСѓР»СЏС‚РѕСЂ СЂР°Р·РјРµСЂР° РїРѕР·РёС†РёРё РїРѕ РјРµС‚РѕРґСѓ Van Tharp"""
 
     def __init__(
             self,
@@ -72,33 +72,33 @@ class PositionSizer:
             account_balance: Optional[float] = None
     ) -> float:
         """
-        Расчёт размера позиции по Van Tharp
+        Р Р°СЃС‡С‘С‚ СЂР°Р·РјРµСЂР° РїРѕР·РёС†РёРё РїРѕ Van Tharp
 
         Args:
-            entry_price: Цена входа
-            stop_loss_price: Цена стоп-лосса
-            account_balance: Текущий баланс (если изменился)
+            entry_price: Р¦РµРЅР° РІС…РѕРґР°
+            stop_loss_price: Р¦РµРЅР° СЃС‚РѕРї-Р»РѕСЃСЃР°
+            account_balance: РўРµРєСѓС‰РёР№ Р±Р°Р»Р°РЅСЃ (РµСЃР»Рё РёР·РјРµРЅРёР»СЃСЏ)
 
         Returns:
-            Размер позиции в базовой валюте
+            Р Р°Р·РјРµСЂ РїРѕР·РёС†РёРё РІ Р±Р°Р·РѕРІРѕР№ РІР°Р»СЋС‚Рµ
         """
         if account_balance:
             self.account_balance = account_balance
 
-        # Риск в долларах
+        # Р РёСЃРє РІ РґРѕР»Р»Р°СЂР°С…
         risk_amount = self.account_balance * self.risk_per_trade
 
-        # Риск на единицу актива
+        # Р РёСЃРє РЅР° РµРґРёРЅРёС†Сѓ Р°РєС‚РёРІР°
         price_risk = abs(entry_price - stop_loss_price)
 
         if price_risk == 0:
             logger.logger.warning("Price risk is zero, returning zero position size")
             return 0
 
-        # Размер позиции
+        # Р Р°Р·РјРµСЂ РїРѕР·РёС†РёРё
         position_size = risk_amount / price_risk
 
-        # Ограничение максимальным размером
+        # РћРіСЂР°РЅРёС‡РµРЅРёРµ РјР°РєСЃРёРјР°Р»СЊРЅС‹Рј СЂР°Р·РјРµСЂРѕРј
         max_position = self.account_balance * self.max_position_percent / entry_price
         position_size = min(position_size, max_position)
 
@@ -119,37 +119,37 @@ class PositionSizer:
             kelly_fraction: float = 0.25
     ) -> float:
         """
-        Расчёт размера позиции по критерию Келли
+        Р Р°СЃС‡С‘С‚ СЂР°Р·РјРµСЂР° РїРѕР·РёС†РёРё РїРѕ РєСЂРёС‚РµСЂРёСЋ РљРµР»Р»Рё
 
         Args:
-            win_rate: Процент выигрышных сделок
-            avg_win: Средний выигрыш
-            avg_loss: Средний проигрыш
-            kelly_fraction: Доля от полного Келли (для консервативности)
+            win_rate: РџСЂРѕС†РµРЅС‚ РІС‹РёРіСЂС‹С€РЅС‹С… СЃРґРµР»РѕРє
+            avg_win: РЎСЂРµРґРЅРёР№ РІС‹РёРіСЂС‹С€
+            avg_loss: РЎСЂРµРґРЅРёР№ РїСЂРѕРёРіСЂС‹С€
+            kelly_fraction: Р”РѕР»СЏ РѕС‚ РїРѕР»РЅРѕРіРѕ РљРµР»Р»Рё (РґР»СЏ РєРѕРЅСЃРµСЂРІР°С‚РёРІРЅРѕСЃС‚Рё)
 
         Returns:
-            Оптимальный процент капитала для риска
+            РћРїС‚РёРјР°Р»СЊРЅС‹Р№ РїСЂРѕС†РµРЅС‚ РєР°РїРёС‚Р°Р»Р° РґР»СЏ СЂРёСЃРєР°
         """
         if avg_loss == 0:
             return self.risk_per_trade
 
-        # Формула Келли: f = (p * b - q) / b
-        # где p = вероятность выигрыша, q = вероятность проигрыша, b = отношение выигрыша к проигрышу
+        # Р¤РѕСЂРјСѓР»Р° РљРµР»Р»Рё: f = (p * b - q) / b
+        # РіРґРµ p = РІРµСЂРѕСЏС‚РЅРѕСЃС‚СЊ РІС‹РёРіСЂС‹С€Р°, q = РІРµСЂРѕСЏС‚РЅРѕСЃС‚СЊ РїСЂРѕРёРіСЂС‹С€Р°, b = РѕС‚РЅРѕС€РµРЅРёРµ РІС‹РёРіСЂС‹С€Р° Рє РїСЂРѕРёРіСЂС‹С€Сѓ
         b = avg_win / abs(avg_loss)
         p = win_rate
         q = 1 - win_rate
 
         kelly_percentage = (p * b - q) / b
 
-        # Применяем дробное Келли для консервативности
+        # РџСЂРёРјРµРЅСЏРµРј РґСЂРѕР±РЅРѕРµ РљРµР»Р»Рё РґР»СЏ РєРѕРЅСЃРµСЂРІР°С‚РёРІРЅРѕСЃС‚Рё
         optimal_risk = kelly_percentage * kelly_fraction
 
-        # Ограничиваем максимальным риском
-        return min(max(optimal_risk, 0.001), 0.05)  # От 0.1% до 5%
+        # РћРіСЂР°РЅРёС‡РёРІР°РµРј РјР°РєСЃРёРјР°Р»СЊРЅС‹Рј СЂРёСЃРєРѕРј
+        return min(max(optimal_risk, 0.001), 0.05)  # РћС‚ 0.1% РґРѕ 5%
 
 
 class StopLossManager:
-    """Менеджер динамических стоп-лоссов"""
+    """РњРµРЅРµРґР¶РµСЂ РґРёРЅР°РјРёС‡РµСЃРєРёС… СЃС‚РѕРї-Р»РѕСЃСЃРѕРІ"""
 
     def __init__(self, atr_multiplier: float = 2.5):
         self.atr_multiplier = atr_multiplier
@@ -161,15 +161,15 @@ class StopLossManager:
             is_long: bool = True
     ) -> float:
         """
-        Расчёт стоп-лосса на основе ATR
+        Р Р°СЃС‡С‘С‚ СЃС‚РѕРї-Р»РѕСЃСЃР° РЅР° РѕСЃРЅРѕРІРµ ATR
 
         Args:
-            current_price: Текущая цена
+            current_price: РўРµРєСѓС‰Р°СЏ С†РµРЅР°
             atr: Average True Range
-            is_long: Длинная позиция или короткая
+            is_long: Р”Р»РёРЅРЅР°СЏ РїРѕР·РёС†РёСЏ РёР»Рё РєРѕСЂРѕС‚РєР°СЏ
 
         Returns:
-            Цена стоп-лосса
+            Р¦РµРЅР° СЃС‚РѕРї-Р»РѕСЃСЃР°
         """
         stop_distance = atr * self.atr_multiplier
 
@@ -189,32 +189,32 @@ class StopLossManager:
             is_long: bool = True
     ) -> float:
         """
-        Расчёт трейлинг стоп-лосса
+        Р Р°СЃС‡С‘С‚ С‚СЂРµР№Р»РёРЅРі СЃС‚РѕРї-Р»РѕСЃСЃР°
 
         Args:
-            entry_price: Цена входа
-            current_price: Текущая цена
-            highest_price: Максимальная цена с момента входа
-            trail_percent: Процент трейлинга
-            is_long: Длинная позиция или короткая
+            entry_price: Р¦РµРЅР° РІС…РѕРґР°
+            current_price: РўРµРєСѓС‰Р°СЏ С†РµРЅР°
+            highest_price: РњР°РєСЃРёРјР°Р»СЊРЅР°СЏ С†РµРЅР° СЃ РјРѕРјРµРЅС‚Р° РІС…РѕРґР°
+            trail_percent: РџСЂРѕС†РµРЅС‚ С‚СЂРµР№Р»РёРЅРіР°
+            is_long: Р”Р»РёРЅРЅР°СЏ РїРѕР·РёС†РёСЏ РёР»Рё РєРѕСЂРѕС‚РєР°СЏ
 
         Returns:
-            Цена трейлинг стопа
+            Р¦РµРЅР° С‚СЂРµР№Р»РёРЅРі СЃС‚РѕРїР°
         """
         if is_long:
-            # Для лонга следим за максимумом
+            # Р”Р»СЏ Р»РѕРЅРіР° СЃР»РµРґРёРј Р·Р° РјР°РєСЃРёРјСѓРјРѕРј
             trail_distance = highest_price * trail_percent
             trailing_stop = highest_price - trail_distance
 
-            # Стоп не может быть ниже цены входа минус начальный риск
+            # РЎС‚РѕРї РЅРµ РјРѕР¶РµС‚ Р±С‹С‚СЊ РЅРёР¶Рµ С†РµРЅС‹ РІС…РѕРґР° РјРёРЅСѓСЃ РЅР°С‡Р°Р»СЊРЅС‹Р№ СЂРёСЃРє
             min_stop = entry_price * (1 - trail_percent)
             return max(trailing_stop, min_stop)
         else:
-            # Для шорта следим за минимумом
+            # Р”Р»СЏ С€РѕСЂС‚Р° СЃР»РµРґРёРј Р·Р° РјРёРЅРёРјСѓРјРѕРј
             trail_distance = current_price * trail_percent
             trailing_stop = current_price + trail_distance
 
-            # Стоп не может быть выше цены входа плюс начальный риск
+            # РЎС‚РѕРї РЅРµ РјРѕР¶РµС‚ Р±С‹С‚СЊ РІС‹С€Рµ С†РµРЅС‹ РІС…РѕРґР° РїР»СЋСЃ РЅР°С‡Р°Р»СЊРЅС‹Р№ СЂРёСЃРє
             max_stop = entry_price * (1 + trail_percent)
             return min(trailing_stop, max_stop)
 
@@ -226,20 +226,20 @@ class StopLossManager:
             is_long: bool = True
     ) -> Optional[float]:
         """
-        Перенос стопа в безубыток
+        РџРµСЂРµРЅРѕСЃ СЃС‚РѕРїР° РІ Р±РµР·СѓР±С‹С‚РѕРє
 
         Args:
-            entry_price: Цена входа
-            current_price: Текущая цена
-            breakeven_trigger: Коэффициент для активации (1.01 = +1%)
-            is_long: Длинная позиция или короткая
+            entry_price: Р¦РµРЅР° РІС…РѕРґР°
+            current_price: РўРµРєСѓС‰Р°СЏ С†РµРЅР°
+            breakeven_trigger: РљРѕСЌС„С„РёС†РёРµРЅС‚ РґР»СЏ Р°РєС‚РёРІР°С†РёРё (1.01 = +1%)
+            is_long: Р”Р»РёРЅРЅР°СЏ РїРѕР·РёС†РёСЏ РёР»Рё РєРѕСЂРѕС‚РєР°СЏ
 
         Returns:
-            Новая цена стопа или None
+            РќРѕРІР°СЏ С†РµРЅР° СЃС‚РѕРїР° РёР»Рё None
         """
         if is_long:
             if current_price >= entry_price * breakeven_trigger:
-                # Переносим стоп чуть выше точки входа
+                # РџРµСЂРµРЅРѕСЃРёРј СЃС‚РѕРї С‡СѓС‚СЊ РІС‹С€Рµ С‚РѕС‡РєРё РІС…РѕРґР°
                 return entry_price * 1.001
         else:
             if current_price <= entry_price / breakeven_trigger:
@@ -249,7 +249,7 @@ class StopLossManager:
 
 
 class RiskManager:
-    """Главный менеджер рисков"""
+    """Р“Р»Р°РІРЅС‹Р№ РјРµРЅРµРґР¶РµСЂ СЂРёСЃРєРѕРІ"""
 
     def __init__(
             self,
@@ -289,31 +289,31 @@ class RiskManager:
             correlation_matrix: Optional[pd.DataFrame] = None
     ) -> Tuple[bool, str]:
         """
-        Проверка возможности открытия позиции
+        РџСЂРѕРІРµСЂРєР° РІРѕР·РјРѕР¶РЅРѕСЃС‚Рё РѕС‚РєСЂС‹С‚РёСЏ РїРѕР·РёС†РёРё
 
         Args:
-            symbol: Символ для новой позиции
-            proposed_size: Предлагаемый размер позиции
-            correlation_matrix: Матрица корреляций между активами
+            symbol: РЎРёРјРІРѕР» РґР»СЏ РЅРѕРІРѕР№ РїРѕР·РёС†РёРё
+            proposed_size: РџСЂРµРґР»Р°РіР°РµРјС‹Р№ СЂР°Р·РјРµСЂ РїРѕР·РёС†РёРё
+            correlation_matrix: РњР°С‚СЂРёС†Р° РєРѕСЂСЂРµР»СЏС†РёР№ РјРµР¶РґСѓ Р°РєС‚РёРІР°РјРё
 
         Returns:
-            (можно_открыть, причина_отказа)
+            (РјРѕР¶РЅРѕ_РѕС‚РєСЂС‹С‚СЊ, РїСЂРёС‡РёРЅР°_РѕС‚РєР°Р·Р°)
         """
-        # Проверка количества позиций
+        # РџСЂРѕРІРµСЂРєР° РєРѕР»РёС‡РµСЃС‚РІР° РїРѕР·РёС†РёР№
         if len(self.positions) >= self.max_positions:
             return False, f"Maximum positions ({self.max_positions}) reached"
 
-        # Проверка дневного лимита потерь
+        # РџСЂРѕРІРµСЂРєР° РґРЅРµРІРЅРѕРіРѕ Р»РёРјРёС‚Р° РїРѕС‚РµСЂСЊ
         daily_loss_percent = self._calculate_daily_loss_percent()
         if daily_loss_percent >= self.max_daily_loss:
             return False, f"Daily loss limit reached ({daily_loss_percent:.2%})"
 
-        # Проверка максимальной просадки
+        # РџСЂРѕРІРµСЂРєР° РјР°РєСЃРёРјР°Р»СЊРЅРѕР№ РїСЂРѕСЃР°РґРєРё
         current_drawdown = self._calculate_drawdown()
         if current_drawdown >= self.max_drawdown:
             return False, f"Maximum drawdown reached ({current_drawdown:.2%})"
 
-        # Проверка корреляции с существующими позициями
+        # РџСЂРѕРІРµСЂРєР° РєРѕСЂСЂРµР»СЏС†РёРё СЃ СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёРјРё РїРѕР·РёС†РёСЏРјРё
         if correlation_matrix is not None and symbol in correlation_matrix.columns:
             for pos_symbol in self.positions.keys():
                 if pos_symbol in correlation_matrix.columns:
@@ -321,7 +321,7 @@ class RiskManager:
                     if abs(correlation) > self.max_correlation:
                         return False, f"High correlation with {pos_symbol} ({correlation:.2f})"
 
-        # Проверка достаточности капитала
+        # РџСЂРѕРІРµСЂРєР° РґРѕСЃС‚Р°С‚РѕС‡РЅРѕСЃС‚Рё РєР°РїРёС‚Р°Р»Р°
         total_exposure = self._calculate_total_exposure() + proposed_size
         if total_exposure > self.current_capital * 0.95:
             return False, "Insufficient capital for position"
@@ -330,13 +330,13 @@ class RiskManager:
 
     def add_position(self, position: Position) -> bool:
         """
-        Добавление новой позиции
+        Р”РѕР±Р°РІР»РµРЅРёРµ РЅРѕРІРѕР№ РїРѕР·РёС†РёРё
 
         Args:
-            position: Объект позиции
+            position: РћР±СЉРµРєС‚ РїРѕР·РёС†РёРё
 
         Returns:
-            Успешность добавления
+            РЈСЃРїРµС€РЅРѕСЃС‚СЊ РґРѕР±Р°РІР»РµРЅРёСЏ
         """
         can_open, reason = self.can_open_position(
             position.symbol,
@@ -349,7 +349,7 @@ class RiskManager:
 
         self.positions[position.id] = position
 
-        # Обновляем метрики
+        # РћР±РЅРѕРІР»СЏРµРј РјРµС‚СЂРёРєРё
         metrics_collector.open_positions.set(len(self.positions))
         metrics_collector.update_position_metrics(
             position.symbol,
@@ -374,15 +374,15 @@ class RiskManager:
             atr: Optional[float] = None
     ) -> Dict[str, Any]:
         """
-        Обновление позиции и проверка стоп-лоссов
+        РћР±РЅРѕРІР»РµРЅРёРµ РїРѕР·РёС†РёРё Рё РїСЂРѕРІРµСЂРєР° СЃС‚РѕРї-Р»РѕСЃСЃРѕРІ
 
         Args:
-            position_id: ID позиции
-            current_price: Текущая цена
-            atr: ATR для динамического стопа
+            position_id: ID РїРѕР·РёС†РёРё
+            current_price: РўРµРєСѓС‰Р°СЏ С†РµРЅР°
+            atr: ATR РґР»СЏ РґРёРЅР°РјРёС‡РµСЃРєРѕРіРѕ СЃС‚РѕРїР°
 
         Returns:
-            Словарь с действиями
+            РЎР»РѕРІР°СЂСЊ СЃ РґРµР№СЃС‚РІРёСЏРјРё
         """
         if position_id not in self.positions:
             return {"action": "none", "reason": "position not found"}
@@ -390,7 +390,7 @@ class RiskManager:
         position = self.positions[position_id]
         position.current_price = current_price
 
-        # Расчёт P&L
+        # Р Р°СЃС‡С‘С‚ P&L
         if position.side == "BUY":
             position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
             price_change = (current_price - position.entry_price) / position.entry_price
@@ -398,7 +398,7 @@ class RiskManager:
             position.unrealized_pnl = (position.entry_price - current_price) * position.quantity
             price_change = (position.entry_price - current_price) / position.entry_price
 
-        # Обновляем метрики
+        # РћР±РЅРѕРІР»СЏРµРј РјРµС‚СЂРёРєРё
         metrics_collector.update_position_metrics(
             position.symbol,
             position.quantity * current_price,
@@ -407,25 +407,25 @@ class RiskManager:
 
         actions = {"action": "none"}
 
-        # Проверка стоп-лосса
+        # РџСЂРѕРІРµСЂРєР° СЃС‚РѕРї-Р»РѕСЃСЃР°
         if position.side == "BUY" and current_price <= position.stop_loss:
             actions = {"action": "close", "reason": "stop_loss_hit", "price": current_price}
         elif position.side == "SELL" and current_price >= position.stop_loss:
             actions = {"action": "close", "reason": "stop_loss_hit", "price": current_price}
 
-        # Проверка тейк-профита
+        # РџСЂРѕРІРµСЂРєР° С‚РµР№Рє-РїСЂРѕС„РёС‚Р°
         if position.take_profit:
             if position.side == "BUY" and current_price >= position.take_profit:
                 actions = {"action": "close", "reason": "take_profit_hit", "price": current_price}
             elif position.side == "SELL" and current_price <= position.take_profit:
                 actions = {"action": "close", "reason": "take_profit_hit", "price": current_price}
 
-        # Обновление трейлинг стопа если в прибыли
-        if price_change > 0.02 and atr:  # В прибыли более 2%
+        # РћР±РЅРѕРІР»РµРЅРёРµ С‚СЂРµР№Р»РёРЅРі СЃС‚РѕРїР° РµСЃР»Рё РІ РїСЂРёР±С‹Р»Рё
+        if price_change > 0.02 and atr:  # Р’ РїСЂРёР±С‹Р»Рё Р±РѕР»РµРµ 2%
             new_stop = self.stop_loss_manager.calculate_trailing_stop(
                 position.entry_price,
                 current_price,
-                current_price,  # В реальности нужно отслеживать максимум
+                current_price,  # Р’ СЂРµР°Р»СЊРЅРѕСЃС‚Рё РЅСѓР¶РЅРѕ РѕС‚СЃР»РµР¶РёРІР°С‚СЊ РјР°РєСЃРёРјСѓРј
                 trail_percent=0.015,
                 is_long=(position.side == "BUY")
             )
@@ -446,31 +446,31 @@ class RiskManager:
             reason: str = "manual"
     ) -> Dict[str, Any]:
         """
-        Закрытие позиции
+        Р—Р°РєСЂС‹С‚РёРµ РїРѕР·РёС†РёРё
 
         Args:
-            position_id: ID позиции
-            close_price: Цена закрытия
-            reason: Причина закрытия
+            position_id: ID РїРѕР·РёС†РёРё
+            close_price: Р¦РµРЅР° Р·Р°РєСЂС‹С‚РёСЏ
+            reason: РџСЂРёС‡РёРЅР° Р·Р°РєСЂС‹С‚РёСЏ
 
         Returns:
-            Информация о закрытой позиции
+            РРЅС„РѕСЂРјР°С†РёСЏ Рѕ Р·Р°РєСЂС‹С‚РѕР№ РїРѕР·РёС†РёРё
         """
         if position_id not in self.positions:
             return {"error": "position not found"}
 
         position = self.positions[position_id]
 
-        # Расчёт финального P&L
+        # Р Р°СЃС‡С‘С‚ С„РёРЅР°Р»СЊРЅРѕРіРѕ P&L
         if position.side == "BUY":
             realized_pnl = (close_price - position.entry_price) * position.quantity
         else:
             realized_pnl = (position.entry_price - close_price) * position.quantity
 
-        # Обновление капитала
+        # РћР±РЅРѕРІР»РµРЅРёРµ РєР°РїРёС‚Р°Р»Р°
         self.current_capital += realized_pnl
 
-        # Сохранение в историю
+        # РЎРѕС…СЂР°РЅРµРЅРёРµ РІ РёСЃС‚РѕСЂРёСЋ
         trade_result = {
             "position_id": position_id,
             "symbol": position.symbol,
@@ -487,16 +487,16 @@ class RiskManager:
 
         self.trade_history.append(trade_result)
 
-        # Удаление позиции
+        # РЈРґР°Р»РµРЅРёРµ РїРѕР·РёС†РёРё
         del self.positions[position_id]
 
-        # Обновление метрик
+        # РћР±РЅРѕРІР»РµРЅРёРµ РјРµС‚СЂРёРє
         metrics_collector.open_positions.set(len(self.positions))
         metrics_collector.pnl_realized.set(
             sum(t["realized_pnl"] for t in self.trade_history)
         )
 
-        # Логирование
+        # Р›РѕРіРёСЂРѕРІР°РЅРёРµ
         logger.log_trade(
             action="close",
             symbol=position.symbol,
@@ -509,7 +509,7 @@ class RiskManager:
         return trade_result
 
     def get_risk_metrics(self) -> RiskMetrics:
-        """Получение текущих метрик риска"""
+        """РџРѕР»СѓС‡РµРЅРёРµ С‚РµРєСѓС‰РёС… РјРµС‚СЂРёРє СЂРёСЃРєР°"""
         total_exposure = self._calculate_total_exposure()
         current_drawdown = self._calculate_drawdown()
         daily_loss = self._calculate_daily_loss_percent()
@@ -517,7 +517,7 @@ class RiskManager:
         sharpe = self._calculate_sharpe_ratio()
         correlation_risk = self._calculate_correlation_risk()
 
-        # Определение уровня риска
+        # РћРїСЂРµРґРµР»РµРЅРёРµ СѓСЂРѕРІРЅСЏ СЂРёСЃРєР°
         if current_drawdown > 0.15 or daily_loss > 0.04:
             risk_level = RiskLevel.CRITICAL
         elif current_drawdown > 0.10 or daily_loss > 0.03:
@@ -539,7 +539,7 @@ class RiskManager:
             correlation_risk=correlation_risk
         )
 
-        # Обновление метрик Prometheus
+        # РћР±РЅРѕРІР»РµРЅРёРµ РјРµС‚СЂРёРє Prometheus
         metrics_collector.update_portfolio_metrics({
             'current_drawdown': current_drawdown * 100,
             'sharpe_ratio': sharpe
@@ -548,7 +548,7 @@ class RiskManager:
         metrics_collector.var_95.set(var_95)
         metrics_collector.daily_loss.set(daily_loss * 100)
 
-        # Логирование риск-событий
+        # Р›РѕРіРёСЂРѕРІР°РЅРёРµ СЂРёСЃРє-СЃРѕР±С‹С‚РёР№
         if risk_level in [RiskLevel.HIGH, RiskLevel.CRITICAL]:
             logger.log_risk_event(
                 event_type="high_risk_detected",
@@ -561,7 +561,7 @@ class RiskManager:
         return metrics
 
     def _calculate_total_exposure(self) -> float:
-        """Расчёт общей экспозиции"""
+        """Р Р°СЃС‡С‘С‚ РѕР±С‰РµР№ СЌРєСЃРїРѕР·РёС†РёРё"""
         return sum(
             pos.quantity * pos.current_price if pos.current_price > 0
             else pos.quantity * pos.entry_price
@@ -569,7 +569,7 @@ class RiskManager:
         )
 
     def _calculate_drawdown(self) -> float:
-        """Расчёт текущей просадки"""
+        """Р Р°СЃС‡С‘С‚ С‚РµРєСѓС‰РµР№ РїСЂРѕСЃР°РґРєРё"""
         if self.current_capital >= self.peak_balance:
             self.peak_balance = self.current_capital
             return 0
@@ -577,7 +577,7 @@ class RiskManager:
         return (self.peak_balance - self.current_capital) / self.peak_balance
 
     def _calculate_max_drawdown(self) -> float:
-        """Расчёт максимальной просадки из истории"""
+        """Р Р°СЃС‡С‘С‚ РјР°РєСЃРёРјР°Р»СЊРЅРѕР№ РїСЂРѕСЃР°РґРєРё РёР· РёСЃС‚РѕСЂРёРё"""
         if not self.trade_history:
             return 0
 
@@ -603,8 +603,8 @@ class RiskManager:
         return max_dd
 
     def _calculate_daily_loss_percent(self) -> float:
-        """Расчёт дневных потерь в процентах"""
-        # Сброс счётчика если новый день
+        """Р Р°СЃС‡С‘С‚ РґРЅРµРІРЅС‹С… РїРѕС‚РµСЂСЊ РІ РїСЂРѕС†РµРЅС‚Р°С…"""
+        # РЎР±СЂРѕСЃ СЃС‡С‘С‚С‡РёРєР° РµСЃР»Рё РЅРѕРІС‹Р№ РґРµРЅСЊ
         current_date = datetime.utcnow().date()
         if current_date != self.last_reset_date:
             self.daily_start_balance = self.current_capital
@@ -615,18 +615,18 @@ class RiskManager:
         return max(0, daily_loss)
 
     def _calculate_var(self, confidence: float = 0.95, window: int = 100) -> float:
-        """Расчёт Value at Risk"""
+        """Р Р°СЃС‡С‘С‚ Value at Risk"""
         if len(self.trade_history) < 20:
-            return self.current_capital * 0.05  # По умолчанию 5%
+            return self.current_capital * 0.05  # РџРѕ СѓРјРѕР»С‡Р°РЅРёСЋ 5%
 
-        # Используем последние N сделок
+        # РСЃРїРѕР»СЊР·СѓРµРј РїРѕСЃР»РµРґРЅРёРµ N СЃРґРµР»РѕРє
         recent_trades = self.trade_history[-window:] if len(self.trade_history) > window else self.trade_history
         returns = [t["return_pct"] / 100 for t in recent_trades]
 
         if not returns:
             return self.current_capital * 0.05
 
-        # Сортируем и находим квантиль
+        # РЎРѕСЂС‚РёСЂСѓРµРј Рё РЅР°С…РѕРґРёРј РєРІР°РЅС‚РёР»СЊ
         sorted_returns = sorted(returns)
         var_index = int((1 - confidence) * len(sorted_returns))
         var_return = abs(sorted_returns[var_index]) if var_index < len(sorted_returns) else abs(sorted_returns[0])
@@ -634,7 +634,7 @@ class RiskManager:
         return self.current_capital * var_return
 
     def _calculate_sharpe_ratio(self, risk_free_rate: float = 0.02) -> float:
-        """Расчёт коэффициента Шарпа"""
+        """Р Р°СЃС‡С‘С‚ РєРѕСЌС„С„РёС†РёРµРЅС‚Р° РЁР°СЂРїР°"""
         if len(self.trade_history) < 10:
             return 0
 
@@ -643,11 +643,11 @@ class RiskManager:
         if not returns or np.std(returns) == 0:
             return 0
 
-        # Годовая доходность (предполагаем ~250 торговых дней)
+        # Р“РѕРґРѕРІР°СЏ РґРѕС…РѕРґРЅРѕСЃС‚СЊ (РїСЂРµРґРїРѕР»Р°РіР°РµРј ~250 С‚РѕСЂРіРѕРІС‹С… РґРЅРµР№)
         avg_return = np.mean(returns)
         std_return = np.std(returns)
 
-        # Количество сделок в день (приблизительно)
+        # РљРѕР»РёС‡РµСЃС‚РІРѕ СЃРґРµР»РѕРє РІ РґРµРЅСЊ (РїСЂРёР±Р»РёР·РёС‚РµР»СЊРЅРѕ)
         first_trade_time = self.trade_history[0].get("timestamp", datetime.utcnow())
         if isinstance(first_trade_time, str):
             first_trade_time = datetime.fromisoformat(first_trade_time)
@@ -664,12 +664,12 @@ class RiskManager:
         return (annualized_return - risk_free_rate) / annualized_std
 
     def _calculate_correlation_risk(self) -> float:
-        """Расчёт риска корреляции портфеля"""
+        """Р Р°СЃС‡С‘С‚ СЂРёСЃРєР° РєРѕСЂСЂРµР»СЏС†РёРё РїРѕСЂС‚С„РµР»СЏ"""
         if len(self.positions) < 2:
             return 0
 
-        # Упрощённый расчёт - в реальности нужна матрица корреляций
-        # Возвращаем процент позиций в одном направлении
+        # РЈРїСЂРѕС‰С‘РЅРЅС‹Р№ СЂР°СЃС‡С‘С‚ - РІ СЂРµР°Р»СЊРЅРѕСЃС‚Рё РЅСѓР¶РЅР° РјР°С‚СЂРёС†Р° РєРѕСЂСЂРµР»СЏС†РёР№
+        # Р’РѕР·РІСЂР°С‰Р°РµРј РїСЂРѕС†РµРЅС‚ РїРѕР·РёС†РёР№ РІ РѕРґРЅРѕРј РЅР°РїСЂР°РІР»РµРЅРёРё
         long_positions = sum(1 for p in self.positions.values() if p.side == "BUY")
         short_positions = len(self.positions) - long_positions
 
@@ -677,7 +677,7 @@ class RiskManager:
         return concentration
 
     def emergency_close_all(self, reason: str = "emergency") -> List[Dict[str, Any]]:
-        """Экстренное закрытие всех позиций"""
+        """Р­РєСЃС‚СЂРµРЅРЅРѕРµ Р·Р°РєСЂС‹С‚РёРµ РІСЃРµС… РїРѕР·РёС†РёР№"""
         logger.logger.warning(f"Emergency close all positions: {reason}")
 
         closed_positions = []
@@ -689,7 +689,7 @@ class RiskManager:
             )
             closed_positions.append(result)
 
-        # Записываем риск-событие
+        # Р—Р°РїРёСЃС‹РІР°РµРј СЂРёСЃРє-СЃРѕР±С‹С‚РёРµ
         logger.log_risk_event(
             event_type="emergency_close",
             severity="CRITICAL",
@@ -708,14 +708,14 @@ class RiskManager:
             price_data: pd.DataFrame
     ) -> pd.DataFrame:
         """
-        Расчёт матрицы корреляций между символами
+        Р Р°СЃС‡С‘С‚ РјР°С‚СЂРёС†С‹ РєРѕСЂСЂРµР»СЏС†РёР№ РјРµР¶РґСѓ СЃРёРјРІРѕР»Р°РјРё
 
         Args:
-            symbols: Список символов
-            price_data: DataFrame с ценами (колонки = символы)
+            symbols: РЎРїРёСЃРѕРє СЃРёРјРІРѕР»РѕРІ
+            price_data: DataFrame СЃ С†РµРЅР°РјРё (РєРѕР»РѕРЅРєРё = СЃРёРјРІРѕР»С‹)
 
         Returns:
-            Матрица корреляций
+            РњР°С‚СЂРёС†Р° РєРѕСЂСЂРµР»СЏС†РёР№
         """
         returns = price_data.pct_change().dropna()
         correlation_matrix = returns.corr()
@@ -729,28 +729,28 @@ class RiskManager:
             risk_tolerance: float = 0.5
     ) -> Dict[str, float]:
         """
-        Оптимизация весов портфеля (упрощённая версия Марковица)
+        РћРїС‚РёРјРёР·Р°С†РёСЏ РІРµСЃРѕРІ РїРѕСЂС‚С„РµР»СЏ (СѓРїСЂРѕС‰С‘РЅРЅР°СЏ РІРµСЂСЃРёСЏ РњР°СЂРєРѕРІРёС†Р°)
 
         Args:
-            expected_returns: Ожидаемые доходности по символам
-            covariance_matrix: Матрица ковариаций
-            risk_tolerance: Толерантность к риску (0=минимальный риск, 1=максимальная доходность)
+            expected_returns: РћР¶РёРґР°РµРјС‹Рµ РґРѕС…РѕРґРЅРѕСЃС‚Рё РїРѕ СЃРёРјРІРѕР»Р°Рј
+            covariance_matrix: РњР°С‚СЂРёС†Р° РєРѕРІР°СЂРёР°С†РёР№
+            risk_tolerance: РўРѕР»РµСЂР°РЅС‚РЅРѕСЃС‚СЊ Рє СЂРёСЃРєСѓ (0=РјРёРЅРёРјР°Р»СЊРЅС‹Р№ СЂРёСЃРє, 1=РјР°РєСЃРёРјР°Р»СЊРЅР°СЏ РґРѕС…РѕРґРЅРѕСЃС‚СЊ)
 
         Returns:
-            Оптимальные веса портфеля
+            РћРїС‚РёРјР°Р»СЊРЅС‹Рµ РІРµСЃР° РїРѕСЂС‚С„РµР»СЏ
         """
         symbols = list(expected_returns.keys())
         n = len(symbols)
 
-        # Равные веса как базовый случай
+        # Р Р°РІРЅС‹Рµ РІРµСЃР° РєР°Рє Р±Р°Р·РѕРІС‹Р№ СЃР»СѓС‡Р°Р№
         equal_weights = {symbol: 1 / n for symbol in symbols}
 
         if n < 2:
             return equal_weights
 
         try:
-            # Упрощённая оптимизация (в реальности нужен scipy.optimize)
-            # Используем правило: больший вес для активов с лучшим соотношением доходность/риск
+            # РЈРїСЂРѕС‰С‘РЅРЅР°СЏ РѕРїС‚РёРјРёР·Р°С†РёСЏ (РІ СЂРµР°Р»СЊРЅРѕСЃС‚Рё РЅСѓР¶РµРЅ scipy.optimize)
+            # РСЃРїРѕР»СЊР·СѓРµРј РїСЂР°РІРёР»Рѕ: Р±РѕР»СЊС€РёР№ РІРµСЃ РґР»СЏ Р°РєС‚РёРІРѕРІ СЃ Р»СѓС‡С€РёРј СЃРѕРѕС‚РЅРѕС€РµРЅРёРµРј РґРѕС…РѕРґРЅРѕСЃС‚СЊ/СЂРёСЃРє
             sharpe_ratios = {}
 
             for symbol in symbols:
@@ -762,7 +762,7 @@ class RiskManager:
                 else:
                     sharpe_ratios[symbol] = 0
 
-            # Нормализуем веса на основе Sharpe ratios
+            # РќРѕСЂРјР°Р»РёР·СѓРµРј РІРµСЃР° РЅР° РѕСЃРЅРѕРІРµ Sharpe ratios
             total_sharpe = sum(max(0, sr) for sr in sharpe_ratios.values())
 
             if total_sharpe > 0:
@@ -773,12 +773,12 @@ class RiskManager:
             else:
                 weights = equal_weights
 
-            # Применяем ограничения (макс 40% на актив)
+            # РџСЂРёРјРµРЅСЏРµРј РѕРіСЂР°РЅРёС‡РµРЅРёСЏ (РјР°РєСЃ 40% РЅР° Р°РєС‚РёРІ)
             max_weight = 0.4
             for symbol in weights:
                 weights[symbol] = min(weights[symbol], max_weight)
 
-            # Перенормализация
+            # РџРµСЂРµРЅРѕСЂРјР°Р»РёР·Р°С†РёСЏ
             total_weight = sum(weights.values())
             if total_weight > 0:
                 weights = {k: v / total_weight for k, v in weights.items()}
@@ -790,7 +790,7 @@ class RiskManager:
             return equal_weights
 
     def get_portfolio_stats(self) -> Dict[str, Any]:
-        """Получение статистики портфеля"""
+        """РџРѕР»СѓС‡РµРЅРёРµ СЃС‚Р°С‚РёСЃС‚РёРєРё РїРѕСЂС‚С„РµР»СЏ"""
         if not self.trade_history:
             return {
                 "total_trades": 0,
@@ -830,12 +830,12 @@ class RiskManager:
         return stats
 
 
-# Глобальный экземпляр
+# Р“Р»РѕР±Р°Р»СЊРЅС‹Р№ СЌРєР·РµРјРїР»СЏСЂ
 risk_manager = None
 
 
 def init_risk_manager(initial_capital: float) -> RiskManager:
-    """Инициализация менеджера рисков"""
+    """РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ РјРµРЅРµРґР¶РµСЂР° СЂРёСЃРєРѕРІ"""
     global risk_manager
     risk_manager = RiskManager(
         initial_capital=initial_capital,

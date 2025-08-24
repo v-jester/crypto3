@@ -42,7 +42,7 @@ class EnhancedPaperTradingBotV5:
             )
 
         except Exception as e:
-            logger.log_error(e, {"context": "Failed to initialize paper trading bot"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Failed to initialize paper trading bot"}")
             raise
 
     async def run(self):
@@ -61,7 +61,7 @@ class EnhancedPaperTradingBotV5:
         except asyncio.CancelledError:
             logger.logger.info("Trading loop cancelled")
         except Exception as e:
-            logger.log_error(e, {"context": "Error in trading loop"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Error in trading loop"}")
             raise
         finally:
             logger.logger.info("Paper Trading Bot main loop stopped")
@@ -87,7 +87,7 @@ class EnhancedPaperTradingBotV5:
             # 4. Управление позициями
 
         except Exception as e:
-            logger.log_error(e, {"context": "Error in trading cycle"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Error in trading cycle"}")
 
     async def _log_status(self):
         """Логирование статуса бота"""

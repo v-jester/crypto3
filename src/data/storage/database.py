@@ -43,7 +43,7 @@ class TimescaleDBManager:
             logger.logger.info("TimescaleDB initialized successfully")
 
         except Exception as e:
-            logger.log_error(e, {"context": "Failed to initialize TimescaleDB"})
+            logger.logger.error(f"Error: {e}, context: {"context": "Failed to initialize TimescaleDB"}")
             raise
 
     async def close(self):
