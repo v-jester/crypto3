@@ -1,0 +1,31 @@
+# Дополнительные настройки стратегии
+strategies:
+  momentum:
+    enabled: true
+    min_volume_ratio: 1.5
+    rsi_oversold: 35
+    rsi_overbought: 65
+
+  mean_reversion:
+    enabled: true
+    bb_periods: 20
+    bb_std: 2.0
+
+  ml_enhanced:
+    enabled: true
+    min_confidence: 0.65
+
+universe:
+  update_interval: 300  # секунд
+  min_volume_24h: 10000000  # $10M
+  max_symbols: 10
+
+alerts:
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+
+  discord:
+    enabled: false
+    webhook_url: ""

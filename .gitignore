@@ -1,0 +1,20 @@
+# Конфиденциальные данные
+.env
+.env.*
+!.env.example
+
+# Данные и логи
+logs/
+data/
+models/
+*.log
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
