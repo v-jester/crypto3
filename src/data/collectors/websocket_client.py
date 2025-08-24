@@ -1,7 +1,7 @@
 ﻿# src/data/collectors/websocket_client.py
 """
-WebSocket РєР»РёРµРЅС‚ РґР»СЏ РїРѕР»СѓС‡РµРЅРёСЏ РґР°РЅРЅС‹С… РІ СЂРµР°Р»СЊРЅРѕРј РІСЂРµРјРµРЅРё СЃ Binance
-РџРѕРґРґРµСЂР¶РёРІР°РµС‚ РјРЅРѕР¶РµСЃС‚РІРµРЅРЅС‹Рµ РїРѕС‚РѕРєРё, Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРѕРµ РїРµСЂРµРїРѕРґРєР»СЋС‡РµРЅРёРµ Рё РѕР±СЂР°Р±РѕС‚РєСѓ РѕС€РёР±РѕРє
+WebSocket клиент для получения данных в реальном времени с Binance
+Поддерживает множественные потоки, автоматическое переподключение и обработку ошибок
 """
 import json
 import asyncio
@@ -17,7 +17,7 @@ from src.monitoring.metrics import metrics_collector
 
 
 class BinanceWebSocketClient:
-    """РђСЃРёРЅС…СЂРѕРЅРЅС‹Р№ WebSocket РєР»РёРµРЅС‚ РґР»СЏ Binance"""
+    """Асинхронный WebSocket клиент для Binance"""
 
     def __init__(self):
         self.base_url = "wss://stream.binance.com:9443/ws" if not settings.api.TESTNET else "wss://testnet.binance.vision/ws"
@@ -25,9 +25,9 @@ class BinanceWebSocketClient:
         self.connections = {}
         self.handlers = {}
         self.running = False
-        self.reconnect_delay = 5  # СЃРµРєСѓРЅРґ
+        self.reconnect_delay = 5  # секунд
         self.max_reconnect_attempts = 10
-        self.ping_interval = 180  # 3 РјРёРЅСѓС‚С‹
+        self.ping_interval = 180  # 3 минуты
         self.message_buffer = deque(maxlen=10000)
         self.stats = {
             "messages_received": 0,
@@ -43,12 +43,12 @@ class BinanceWebSocketClient:
             handler: Optional[Callable] = None
     ):
         """
-        РџРѕРґРїРёСЃРєР° РЅР° СЃРІРµС‡РЅС‹Рµ РґР°РЅРЅС‹Рµ
+        Подписка на свечные данные
 
         Args:
-            symbols: РЎРїРёСЃРѕРє С‚РѕСЂРіРѕРІС‹С… РїР°СЂ (РЅР°РїСЂРёРјРµСЂ, ['BTCUSDT', 'ETHUSDT'])
-            intervals: РРЅС‚РµСЂРІР°Р»С‹ СЃРІРµС‡РµР№ (РЅР°РїСЂРёРјРµСЂ, ['5m', '15m'])
-            handler: Р¤СѓРЅРєС†РёСЏ-РѕР±СЂР°Р±РѕС‚С‡РёРє РґР»СЏ РґР°РЅРЅС‹С…
+            symbols: Список торговых пар (например, ['BTCUSDT', 'ETHUSDT'])
+            intervals: Интервалы свечей (например, ['5m', '15m'])
+            handler: Функция-обработчик для данных
         """
         streams = []
         for symbol in symbols:
@@ -68,11 +68,11 @@ class BinanceWebSocketClient:
             handler: Optional[Callable] = None
     ):
         """
-        РџРѕРґРїРёСЃРєР° РЅР° С‚РёРєРµСЂС‹ (24hr РёР·РјРµРЅРµРЅРёСЏ)
+        Подписка на тикеры (24hr изменения)
 
         Args:
-            symbols: РЎРїРёСЃРѕРє С‚РѕСЂРіРѕРІС‹С… РїР°СЂ
-            handler: Р¤СѓРЅРєС†РёСЏ-РѕР±СЂР°Р±РѕС‚С‡РёРє
+            symbols: Список торговых пар
+            handler: Функция-обработчик
         """
         streams = [f"{symbol.lower()}@ticker" for symbol in symbols]
 
@@ -91,13 +91,13 @@ class BinanceWebSocketClient:
             handler: Optional[Callable] = None
     ):
         """
-        РџРѕРґРїРёСЃРєР° РЅР° СЃС‚Р°РєР°РЅ Р·Р°СЏРІРѕРє
+        Подписка на стакан заявок
 
         Args:
-            symbols: РЎРїРёСЃРѕРє С‚РѕСЂРіРѕРІС‹С… РїР°СЂ
-            levels: Р“Р»СѓР±РёРЅР° СЃС‚Р°РєР°РЅР° (5, 10, 20)
-            update_speed: РЎРєРѕСЂРѕСЃС‚СЊ РѕР±РЅРѕРІР»РµРЅРёСЏ РІ РјСЃ (100 РёР»Рё 1000)
-            handler: Р¤СѓРЅРєС†РёСЏ-РѕР±СЂР°Р±РѕС‚С‡РёРє
+            symbols: Список торговых пар
+            levels: Глубина стакана (5, 10, 20)
+            update_speed: Скорость обновления в мс (100 или 1000)
+            handler: Функция-обработчик
         """
         speed = "100ms" if update_speed == 100 else "1000ms"
         streams = [f"{symbol.lower()}@depth{levels}@{speed}" for symbol in symbols]
@@ -115,11 +115,11 @@ class BinanceWebSocketClient:
             handler: Optional[Callable] = None
     ):
         """
-        РџРѕРґРїРёСЃРєР° РЅР° РїРѕС‚РѕРє СЃРґРµР»РѕРє
+        Подписка на поток сделок
 
         Args:
-            symbols: РЎРїРёСЃРѕРє С‚РѕСЂРіРѕРІС‹С… РїР°СЂ
-            handler: Р¤СѓРЅРєС†РёСЏ-РѕР±СЂР°Р±РѕС‚С‡РёРє
+            symbols: Список торговых пар
+            handler: Функция-обработчик
         """
         streams = [f"{symbol.lower()}@aggTrade" for symbol in symbols]
 
@@ -131,11 +131,11 @@ class BinanceWebSocketClient:
         await self._connect_streams(stream_name, streams)
 
     async def _connect_streams(self, name: str, streams: List[str]):
-        """РџРѕРґРєР»СЋС‡РµРЅРёРµ Рє РјРЅРѕР¶РµСЃС‚РІРµРЅРЅС‹Рј РїРѕС‚РѕРєР°Рј"""
+        """Подключение к множественным потокам"""
         if not streams:
             return
 
-        # Р¤РѕСЂРјРёСЂСѓРµРј URL СЃ РјРЅРѕР¶РµСЃС‚РІРµРЅРЅС‹РјРё РїРѕС‚РѕРєР°РјРё
+        # Формируем URL с множественными потоками
         combined_url = f"{self.base_url.replace('/ws', '/stream')}?streams={'/'.join(streams)}"
 
         self.streams[name] = {
@@ -144,11 +144,11 @@ class BinanceWebSocketClient:
             "reconnect_attempts": 0
         }
 
-        # Р—Р°РїСѓСЃРєР°РµРј РїРѕРґРєР»СЋС‡РµРЅРёРµ
+        # Запускаем подключение
         asyncio.create_task(self._maintain_connection(name))
 
     async def _maintain_connection(self, name: str):
-        """РџРѕРґРґРµСЂР¶Р°РЅРёРµ СЃРѕРµРґРёРЅРµРЅРёСЏ СЃ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРёРј РїРµСЂРµРїРѕРґРєР»СЋС‡РµРЅРёРµРј"""
+        """Поддержание соединения с автоматическим переподключением"""
         stream_info = self.streams.get(name)
         if not stream_info:
             return
@@ -170,7 +170,7 @@ class BinanceWebSocketClient:
                     logger.logger.info(f"Connected to {name} WebSocket")
                     metrics_collector.record_api_latency("websocket", "connect", 0)
 
-                    # РћР±СЂР°Р±РѕС‚РєР° СЃРѕРѕР±С‰РµРЅРёР№
+                    # Обработка сообщений
                     await self._handle_messages(name, websocket)
 
             except websockets.exceptions.ConnectionClosed as e:
@@ -178,7 +178,7 @@ class BinanceWebSocketClient:
                 self.stats["errors"] += 1
 
             except Exception as e:
-                logger.logger.error(f"Error: {e}, context: {"context": f"WebSocket {name} error"}")
+                logger.logger.error(f"WebSocket {name} error: {e}")
                 self.stats["errors"] += 1
                 metrics_collector.record_error("websocket_error", name)
 
@@ -186,7 +186,7 @@ class BinanceWebSocketClient:
                 if name in self.connections:
                     del self.connections[name]
 
-            # РџРµСЂРµРїРѕРґРєР»СЋС‡РµРЅРёРµ СЃ СЌРєСЃРїРѕРЅРµРЅС†РёР°Р»СЊРЅРѕР№ Р·Р°РґРµСЂР¶РєРѕР№
+            # Переподключение с экспоненциальной задержкой
             if self.running:
                 stream_info["reconnect_attempts"] += 1
                 self.stats["reconnects"] += 1
@@ -197,34 +197,34 @@ class BinanceWebSocketClient:
 
                 delay = min(
                     self.reconnect_delay * (2 ** stream_info["reconnect_attempts"]),
-                    300  # РњР°РєСЃРёРјСѓРј 5 РјРёРЅСѓС‚
+                    300  # Максимум 5 минут
                 )
 
                 logger.logger.info(f"Reconnecting {name} in {delay} seconds...")
                 await asyncio.sleep(delay)
 
     async def _handle_messages(self, name: str, websocket):
-        """РћР±СЂР°Р±РѕС‚РєР° РІС…РѕРґСЏС‰РёС… СЃРѕРѕР±С‰РµРЅРёР№"""
+        """Обработка входящих сообщений"""
         async for message in websocket:
             try:
                 data = json.loads(message)
 
-                # РћР±РЅРѕРІР»РµРЅРёРµ СЃС‚Р°С‚РёСЃС‚РёРєРё
+                # Обновление статистики
                 self.stats["messages_received"] += 1
                 self.stats["last_message_time"] = time.time()
                 metrics_collector.websocket_messages.labels(stream_type=name).inc()
 
-                # РћРїСЂРµРґРµР»СЏРµРј С‚РёРї РїРѕС‚РѕРєР° РёР· РґР°РЅРЅС‹С…
+                # Определяем тип потока из данных
                 stream_name = data.get("stream", "")
 
-                # РћР±СЂР°Р±РѕС‚РєР° С‡РµСЂРµР· РїРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРёР№ handler
+                # Обработка через пользовательский handler
                 if stream_name in self.handlers:
                     await self.handlers[stream_name](data.get("data", data))
 
-                # РћР±СЂР°Р±РѕС‚РєР° РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ
+                # Обработка по умолчанию
                 await self._process_message(name, data)
 
-                # Р‘СѓС„РµСЂРёР·Р°С†РёСЏ РґР»СЏ Р°РЅР°Р»РёР·Р°
+                # Буферизация для анализа
                 self.message_buffer.append({
                     "timestamp": datetime.utcnow().isoformat(),
                     "stream": name,
@@ -235,20 +235,20 @@ class BinanceWebSocketClient:
                 logger.logger.error(f"Failed to decode WebSocket message: {e}")
 
             except Exception as e:
-                logger.logger.error(f"Error: {e}, context: {"context": f"Error processing {name} message"}")
+                logger.logger.error(f"Error processing {name} message: {e}")
 
     async def _process_message(self, stream_type: str, data: Dict[str, Any]):
-        """РћР±СЂР°Р±РѕС‚РєР° СЃРѕРѕР±С‰РµРЅРёСЏ РїРѕ С‚РёРїСѓ РїРѕС‚РѕРєР°"""
+        """Обработка сообщения по типу потока"""
         try:
             if "data" in data:
-                # РњРЅРѕР¶РµСЃС‚РІРµРЅРЅС‹Р№ РїРѕС‚РѕРє
+                # Множественный поток
                 stream_data = data["data"]
                 stream_name = data.get("stream", "")
             else:
                 stream_data = data
                 stream_name = stream_type
 
-            # РћРїСЂРµРґРµР»СЏРµРј С‚РёРї РґР°РЅРЅС‹С… РїРѕ stream name
+            # Определяем тип данных по stream name
             if "kline" in stream_name:
                 await self._process_kline(stream_data)
             elif "ticker" in stream_name:
@@ -259,10 +259,10 @@ class BinanceWebSocketClient:
                 await self._process_trade(stream_data)
 
         except Exception as e:
-            logger.logger.error(f"Error: {e}, context: {"context": f"Failed to process {stream_type} message"}")
+            logger.logger.error(f"Failed to process {stream_type} message: {e}")
 
     async def _process_kline(self, data: Dict[str, Any]):
-        """РћР±СЂР°Р±РѕС‚РєР° РґР°РЅРЅС‹С… СЃРІРµС‡РµР№"""
+        """Обработка данных свечей"""
         kline = data.get("k", {})
 
         if not kline:
@@ -286,11 +286,11 @@ class BinanceWebSocketClient:
             "is_closed": kline.get("x", False)
         }
 
-        # РљРµС€РёСЂСѓРµРј РІ Redis
+        # Кешируем в Redis
         cache_key = f"kline:{symbol}:{interval}:latest"
         await redis_client.set(cache_key, candle_data, expire=300)
 
-        # Р”РѕР±Р°РІР»СЏРµРј РІ РёСЃС‚РѕСЂРёСЋ С†РµРЅ
+        # Добавляем в историю цен
         if candle_data["is_closed"]:
             await redis_client.add_price_history(
                 symbol,
@@ -298,11 +298,11 @@ class BinanceWebSocketClient:
                 datetime.fromtimestamp(candle_data["close_time"] / 1000)
             )
 
-        # РћР±РЅРѕРІР»СЏРµРј РјРµС‚СЂРёРєРё
+        # Обновляем метрики
         metrics_collector.update_market_data(symbol, candle_data["close"], candle_data["volume"])
 
     async def _process_ticker(self, data: Dict[str, Any]):
-        """РћР±СЂР°Р±РѕС‚РєР° РґР°РЅРЅС‹С… С‚РёРєРµСЂР°"""
+        """Обработка данных тикера"""
         ticker_data = {
             "symbol": data.get("s"),
             "price_change": float(data.get("p", 0)),
@@ -322,12 +322,12 @@ class BinanceWebSocketClient:
             "trades": int(data.get("n", 0))
         }
 
-        # РљРµС€РёСЂСѓРµРј
+        # Кешируем
         cache_key = f"ticker:{ticker_data['symbol']}"
         await redis_client.set(cache_key, ticker_data, expire=60)
 
     async def _process_depth(self, data: Dict[str, Any]):
-        """РћР±СЂР°Р±РѕС‚РєР° РґР°РЅРЅС‹С… СЃС‚Р°РєР°РЅР°"""
+        """Обработка данных стакана"""
         depth_data = {
             "symbol": data.get("s", ""),
             "last_update_id": data.get("u"),
@@ -335,21 +335,21 @@ class BinanceWebSocketClient:
             "asks": [[float(p), float(q)] for p, q in data.get("a", [])]
         }
 
-        # Р’С‹С‡РёСЃР»СЏРµРј СЃРїСЂРµРґ
+        # Вычисляем спред
         if depth_data["bids"] and depth_data["asks"]:
             best_bid = depth_data["bids"][0][0]
             best_ask = depth_data["asks"][0][0]
-            spread = (best_ask - best_bid) / best_ask * 10000  # РІ Р±Р°Р·РёСЃРЅС‹С… РїСѓРЅРєС‚Р°С…
+            spread = (best_ask - best_bid) / best_ask * 10000  # в базисных пунктах
 
             depth_data["spread_bps"] = spread
             depth_data["mid_price"] = (best_bid + best_ask) / 2
 
-        # РљРµС€РёСЂСѓРµРј
+        # Кешируем
         cache_key = f"depth:{depth_data['symbol']}"
         await redis_client.set(cache_key, depth_data, expire=10)
 
     async def _process_trade(self, data: Dict[str, Any]):
-        """РћР±СЂР°Р±РѕС‚РєР° РґР°РЅРЅС‹С… СЃРґРµР»РѕРє"""
+        """Обработка данных сделок"""
         trade_data = {
             "symbol": data.get("s"),
             "trade_id": data.get("a"),
@@ -359,25 +359,25 @@ class BinanceWebSocketClient:
             "is_buyer_maker": data.get("m", False)
         }
 
-        # Р”РѕР±Р°РІР»СЏРµРј РІ СЃРїРёСЃРѕРє РїРѕСЃР»РµРґРЅРёС… СЃРґРµР»РѕРє
+        # Добавляем в список последних сделок
         cache_key = f"trades:{trade_data['symbol']}"
         await redis_client.lpush(cache_key, trade_data)
-        await redis_client.ltrim(cache_key, 0, 99)  # РЎРѕС…СЂР°РЅСЏРµРј РїРѕСЃР»РµРґРЅРёРµ 100 СЃРґРµР»РѕРє
+        await redis_client.ltrim(cache_key, 0, 99)  # Сохраняем последние 100 сделок
 
     async def start(self):
-        """Р—Р°РїСѓСЃРє WebSocket РєР»РёРµРЅС‚Р°"""
+        """Запуск WebSocket клиента"""
         self.running = True
         logger.logger.info("Starting WebSocket client")
 
-        # Р—Р°РїСѓСЃРєР°РµРј РјРѕРЅРёС‚РѕСЂРёРЅРі СЃРѕСЃС‚РѕСЏРЅРёСЏ
+        # Запускаем мониторинг состояния
         asyncio.create_task(self._monitor_health())
 
     async def stop(self):
-        """РћСЃС‚Р°РЅРѕРІРєР° WebSocket РєР»РёРµРЅС‚Р°"""
+        """Остановка WebSocket клиента"""
         self.running = False
         logger.logger.info("Stopping WebSocket client")
 
-        # Р—Р°РєСЂС‹РІР°РµРј РІСЃРµ СЃРѕРµРґРёРЅРµРЅРёСЏ
+        # Закрываем все соединения
         for name, ws in list(self.connections.items()):
             try:
                 await ws.close()
@@ -388,13 +388,13 @@ class BinanceWebSocketClient:
         self.streams.clear()
 
     async def _monitor_health(self):
-        """РњРѕРЅРёС‚РѕСЂРёРЅРі Р·РґРѕСЂРѕРІСЊСЏ СЃРѕРµРґРёРЅРµРЅРёР№"""
+        """Мониторинг здоровья соединений"""
         while self.running:
             await asyncio.sleep(30)
 
             current_time = time.time()
 
-            # РџСЂРѕРІРµСЂСЏРµРј Р°РєС‚РёРІРЅРѕСЃС‚СЊ СЃРѕРµРґРёРЅРµРЅРёР№
+            # Проверяем активность соединений
             if self.stats["last_message_time"]:
                 time_since_last_message = current_time - self.stats["last_message_time"]
 
@@ -403,7 +403,7 @@ class BinanceWebSocketClient:
                         f"No messages received for {time_since_last_message:.0f} seconds"
                     )
 
-            # Р›РѕРіРёСЂСѓРµРј СЃС‚Р°С‚РёСЃС‚РёРєСѓ
+            # Логируем статистику
             logger.logger.debug(
                 "WebSocket statistics",
                 messages=self.stats["messages_received"],
@@ -413,7 +413,7 @@ class BinanceWebSocketClient:
             )
 
     def get_stats(self) -> Dict[str, Any]:
-        """РџРѕР»СѓС‡РµРЅРёРµ СЃС‚Р°С‚РёСЃС‚РёРєРё СЂР°Р±РѕС‚С‹"""
+        """Получение статистики работы"""
         return {
             **self.stats,
             "active_connections": len(self.connections),
@@ -422,29 +422,29 @@ class BinanceWebSocketClient:
         }
 
 
-# Р“Р»РѕР±Р°Р»СЊРЅС‹Р№ СЌРєР·РµРјРїР»СЏСЂ
+# Глобальный экземпляр
 ws_client = BinanceWebSocketClient()
 
 
-# Р’СЃРїРѕРјРѕРіР°С‚РµР»СЊРЅС‹Рµ С„СѓРЅРєС†РёРё
+# Вспомогательные функции
 async def init_websocket_client():
-    """РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ WebSocket РєР»РёРµРЅС‚Р°"""
+    """Инициализация WebSocket клиента"""
     await ws_client.start()
 
-    # РџРѕРґРїРёСЃС‹РІР°РµРјСЃСЏ РЅР° РѕСЃРЅРѕРІРЅС‹Рµ РїРѕС‚РѕРєРё
+    # Подписываемся на основные потоки
     symbols = settings.trading.SYMBOLS
 
-    # РџРѕРґРїРёСЃРєР° РЅР° СЃРІРµС‡Рё
+    # Подписка на свечи
     await ws_client.subscribe_klines(
         symbols=symbols,
         intervals=[settings.trading.PRIMARY_TIMEFRAME]
     )
 
-    # РџРѕРґРїРёСЃРєР° РЅР° С‚РёРєРµСЂС‹
+    # Подписка на тикеры
     await ws_client.subscribe_ticker(symbols=symbols)
 
-    # РџРѕРґРїРёСЃРєР° РЅР° СЃС‚Р°РєР°РЅ РґР»СЏ С‚РѕРї СЃРёРјРІРѕР»РѕРІ
-    top_symbols = symbols[:3]  # РћРіСЂР°РЅРёС‡РёРІР°РµРј РґР»СЏ СЌРєРѕРЅРѕРјРёРё СЂРµСЃСѓСЂСЃРѕРІ
+    # Подписка на стакан для топ символов
+    top_symbols = symbols[:3]  # Ограничиваем для экономии ресурсов
     await ws_client.subscribe_depth(
         symbols=top_symbols,
         levels=20,
@@ -457,5 +457,5 @@ async def init_websocket_client():
 
 
 async def close_websocket_client():
-    """Р—Р°РєСЂС‹С‚РёРµ WebSocket РєР»РёРµРЅС‚Р°"""
+    """Закрытие WebSocket клиента"""
     await ws_client.stop()

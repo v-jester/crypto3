@@ -1,786 +1,623 @@
-﻿# src/ml/models/ml_engine.py
+﻿# src/bots/advanced_paper_bot.py
 """
-ML Engine СЃ Р°РЅСЃР°РјР±Р»РµРј XGBoost Рё LightGBM РґР»СЏ РїСЂРµРґСЃРєР°Р·Р°РЅРёСЏ РґРІРёР¶РµРЅРёСЏ С†РµРЅС‹
-Р’РєР»СЋС‡Р°РµС‚ feature engineering, online learning Рё РІР°Р»РёРґР°С†РёСЋ
+Продвинутый Paper Trading Bot с реальными данными Binance и ML стратегиями
 """
-import numpy as np
-import pandas as pd
-import xgboost as xgb
-import lightgbm as lgb
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.preprocessing import StandardScaler, RobustScaler
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from typing import Dict, List, Optional, Tuple, Any
-import joblib
-from pathlib import Path
 import asyncio
+import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
-from src.monitoring.logger import logger, log_performance
+from typing import Dict, List, Optional, Any
+from binance import AsyncClient
+from binance.streams import BinanceSocketManager
+from binance.enums import *
+
+from src.monitoring.logger import logger
 from src.config.settings import settings
-from src.monitoring.metrics import metrics_collector
+from src.data.storage.redis_client import redis_client
+from src.risk.risk_manager import RiskManager, Position
+from src.data.collectors.historical_data import HistoricalDataCollector
+from src.data.collectors.websocket_client import ws_client
+from src.ml.models.ml_engine import ml_engine  # Исправлено: ml_engine вместо ml
 
 
-class FeatureEngineering:
-    """Р“РµРЅРµСЂР°С‚РѕСЂ РїСЂРёР·РЅР°РєРѕРІ РґР»СЏ ML РјРѕРґРµР»РµР№"""
+class AdvancedPaperTradingBot:
+    """Продвинутый бот с ML, риск-менеджментом и реальными данными"""
 
-    def __init__(self):
-        self.feature_names = []
-        self.scaler = RobustScaler()  # РЈСЃС‚РѕР№С‡РёРІ Рє РІС‹Р±СЂРѕСЃР°Рј
-
-    def create_features(
+    def __init__(
             self,
-            df: pd.DataFrame,
-            timeframes: List[int] = [5, 15, 60, 240]
-    ) -> pd.DataFrame:
-        """
-        РЎРѕР·РґР°РЅРёРµ 3000+ РїСЂРёР·РЅР°РєРѕРІ РёР· OHLCV РґР°РЅРЅС‹С…
+            initial_balance: float = 10000.0,
+            maker_fee: float = 0.001,
+            taker_fee: float = 0.001,
+            slippage_bps: float = 5.0
+    ):
+        self.initial_balance = initial_balance
+        self.current_balance = initial_balance
+        self.maker_fee = maker_fee
+        self.taker_fee = taker_fee
+        self.slippage_bps = slippage_bps
 
-        Args:
-            df: DataFrame СЃ OHLCV РґР°РЅРЅС‹РјРё
-            timeframes: РЎРїРёСЃРѕРє С‚Р°Р№РјС„СЂРµР№РјРѕРІ РґР»СЏ РјСѓР»СЊС‚РёС‚Р°Р№РјС„СЂРµР№РјРѕРІРѕРіРѕ Р°РЅР°Р»РёР·Р°
+        # Компоненты системы
+        self.binance_client = None
+        self.socket_manager = None
+        self.data_collector = HistoricalDataCollector()
+        self.risk_manager = RiskManager(
+            initial_capital=initial_balance,
+            max_drawdown=settings.trading.MAX_DRAWDOWN_PERCENT,
+            max_daily_loss=settings.trading.MAX_DAILY_LOSS_PERCENT,
+            max_positions=settings.trading.MAX_POSITIONS
+        )
 
-        Returns:
-            DataFrame СЃ РїСЂРёР·РЅР°РєР°РјРё
-        """
-        features = pd.DataFrame(index=df.index)
+        # Торговые данные
+        self.positions = {}
+        self.trade_history = []
+        self.market_data = {}
+        self.indicators = {}
 
-        # Р‘Р°Р·РѕРІС‹Рµ С†РµРЅРѕРІС‹Рµ РїСЂРёР·РЅР°РєРё
-        features = self._add_price_features(features, df)
+        # Флаги состояния
+        self.running = False
+        self.connected = False
 
-        # РўРµС…РЅРёС‡РµСЃРєРёРµ РёРЅРґРёРєР°С‚РѕСЂС‹ РґР»СЏ СЂР°Р·РЅС‹С… С‚Р°Р№РјС„СЂРµР№РјРѕРІ
-        for tf in timeframes:
-            features = self._add_technical_features(features, df, tf)
+    async def initialize(self):
+        """Полная инициализация бота"""
+        try:
+            logger.logger.info("Initializing Advanced Paper Trading Bot")
 
-        # РњРёРєСЂРѕСЃС‚СЂСѓРєС‚СѓСЂР° СЂС‹РЅРєР°
-        features = self._add_microstructure_features(features, df)
+            # 1. Подключение к Binance API
+            await self._connect_binance()
 
-        # РћР±СЉС‘РјРЅС‹Рµ РїСЂРёР·РЅР°РєРё
-        features = self._add_volume_features(features, df)
+            # 2. Загрузка исторических данных
+            await self._load_historical_data()
 
-        # РџР°С‚С‚РµСЂРЅС‹ Рё СЃРІРµС‡РЅС‹Рµ С„РѕСЂРјР°С†РёРё
-        features = self._add_pattern_features(features, df)
+            # 3. Инициализация ML моделей
+            await self._initialize_ml()
 
-        # РЎС‚Р°С‚РёСЃС‚РёС‡РµСЃРєРёРµ РїСЂРёР·РЅР°РєРё
-        features = self._add_statistical_features(features, df)
+            # 4. Запуск WebSocket стримов
+            await self._start_websocket_streams()
 
-        # Р’Р·Р°РёРјРѕРґРµР№СЃС‚РІРёСЏ РїСЂРёР·РЅР°РєРѕРІ
-        features = self._add_interaction_features(features)
+            logger.logger.info(
+                "Advanced Paper Trading Bot initialized",
+                initial_balance=self.initial_balance,
+                symbols=settings.trading.SYMBOLS,
+                timeframe=settings.trading.PRIMARY_TIMEFRAME
+            )
 
-        # РЎРѕС…СЂР°РЅСЏРµРј РёРјРµРЅР° РїСЂРёР·РЅР°РєРѕРІ
-        self.feature_names = features.columns.tolist()
+        except Exception as e:
+            logger.logger.error(f"Failed to initialize advanced bot: {e}")
+            raise
 
-        logger.logger.info(f"Created {len(self.feature_names)} features")
+    async def _connect_binance(self):
+        """Подключение к Binance API"""
+        try:
+            # Используем testnet для paper trading
+            self.binance_client = await AsyncClient.create(
+                api_key=settings.api.BINANCE_API_KEY.get_secret_value(),
+                api_secret=settings.api.BINANCE_API_SECRET.get_secret_value(),
+                testnet=settings.api.TESTNET
+            )
 
-        return features
+            # Проверяем подключение
+            await self.binance_client.ping()
 
-    def _add_price_features(self, features: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
-        """Р”РѕР±Р°РІР»РµРЅРёРµ С†РµРЅРѕРІС‹С… РїСЂРёР·РЅР°РєРѕРІ"""
-        # РР·РјРµРЅРµРЅРёСЏ С†РµРЅС‹
-        for period in [1, 3, 5, 10, 20, 50]:
-            features[f'returns_{period}'] = df['close'].pct_change(period)
-            features[f'log_returns_{period}'] = np.log(df['close'] / df['close'].shift(period))
+            # Получаем информацию об аккаунте (для testnet)
+            account_info = await self.binance_client.get_account()
+            logger.logger.info(f"Connected to Binance {'Testnet' if settings.api.TESTNET else 'Live'}")
 
-        # Р¦РµРЅРѕРІС‹Рµ СѓСЂРѕРІРЅРё
-        for period in [10, 20, 50, 100]:
-            features[f'high_{period}'] = df['high'].rolling(period).max()
-            features[f'low_{period}'] = df['low'].rolling(period).min()
-            features[f'distance_from_high_{period}'] = (features[f'high_{period}'] - df['close']) / df['close']
-            features[f'distance_from_low_{period}'] = (df['close'] - features[f'low_{period}']) / df['close']
+            # Инициализируем data collector с клиентом
+            await self.data_collector.initialize(self.binance_client)
 
-        # Р¦РµРЅРѕРІС‹Рµ РєР°РЅР°Р»С‹
-        features['hl_ratio'] = df['high'] / df['low']
-        features['co_ratio'] = df['close'] / df['open']
-        features['body_size'] = abs(df['close'] - df['open']) / df['open']
-        features['upper_shadow'] = (df['high'] - df[['close', 'open']].max(axis=1)) / df['open']
-        features['lower_shadow'] = (df[['close', 'open']].min(axis=1) - df['low']) / df['open']
+            self.connected = True
 
-        return features
+        except Exception as e:
+            logger.logger.error(f"Binance connection failed: {e}")
+            # Продолжаем работу в оффлайн режиме
+            self.connected = False
 
-    def _add_technical_features(
-            self,
-            features: pd.DataFrame,
-            df: pd.DataFrame,
-            timeframe: int
-    ) -> pd.DataFrame:
-        """Р”РѕР±Р°РІР»РµРЅРёРµ С‚РµС…РЅРёС‡РµСЃРєРёС… РёРЅРґРёРєР°С‚РѕСЂРѕРІ"""
-        prefix = f'tf{timeframe}_'
+    async def _load_historical_data(self):
+        """Загрузка исторических данных для анализа"""
+        logger.logger.info("Loading historical data...")
 
-        # Moving Averages
-        for ma_period in [7, 14, 21, 50]:
-            ma = df['close'].rolling(ma_period).mean()
-            features[f'{prefix}sma_{ma_period}'] = ma
-            features[f'{prefix}sma_{ma_period}_slope'] = ma.diff()
-            features[f'{prefix}price_to_sma_{ma_period}'] = df['close'] / ma
-
-        # EMA
-        for ema_period in [9, 12, 26]:
-            ema = df['close'].ewm(span=ema_period, adjust=False).mean()
-            features[f'{prefix}ema_{ema_period}'] = ema
-            features[f'{prefix}price_to_ema_{ema_period}'] = df['close'] / ema
-
-        # RSI РІР°СЂРёР°РЅС‚С‹
-        for rsi_period in [7, 14, 21]:
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=rsi_period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_period).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            features[f'{prefix}rsi_{rsi_period}'] = rsi
-            features[f'{prefix}rsi_{rsi_period}_oversold'] = (rsi < 30).astype(int)
-            features[f'{prefix}rsi_{rsi_period}_overbought'] = (rsi > 70).astype(int)
-
-        # MACD РІР°СЂРёР°РЅС‚С‹
-        exp1 = df['close'].ewm(span=12, adjust=False).mean()
-        exp2 = df['close'].ewm(span=26, adjust=False).mean()
-        macd = exp1 - exp2
-        signal = macd.ewm(span=9, adjust=False).mean()
-        features[f'{prefix}macd'] = macd
-        features[f'{prefix}macd_signal'] = signal
-        features[f'{prefix}macd_hist'] = macd - signal
-        features[f'{prefix}macd_cross'] = np.where(macd > signal, 1, -1)
-
-        # Bollinger Bands
-        for bb_period in [10, 20, 50]:
-            sma = df['close'].rolling(bb_period).mean()
-            std = df['close'].rolling(bb_period).std()
-            upper = sma + (std * 2)
-            lower = sma - (std * 2)
-            features[f'{prefix}bb_upper_{bb_period}'] = upper
-            features[f'{prefix}bb_lower_{bb_period}'] = lower
-            features[f'{prefix}bb_width_{bb_period}'] = upper - lower
-            features[f'{prefix}bb_position_{bb_period}'] = (df['close'] - lower) / (upper - lower)
-
-        # ATR Рё РІРѕР»Р°С‚РёР»СЊРЅРѕСЃС‚СЊ
-        high_low = df['high'] - df['low']
-        high_close = np.abs(df['high'] - df['close'].shift())
-        low_close = np.abs(df['low'] - df['close'].shift())
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = ranges.max(axis=1)
-
-        for atr_period in [7, 14, 21]:
-            atr = true_range.rolling(atr_period).mean()
-            features[f'{prefix}atr_{atr_period}'] = atr
-            features[f'{prefix}atr_ratio_{atr_period}'] = atr / df['close']
-
-        # Stochastic Oscillator
-        for stoch_period in [5, 14, 21]:
-            low_min = df['low'].rolling(stoch_period).min()
-            high_max = df['high'].rolling(stoch_period).max()
-            stoch_k = 100 * ((df['close'] - low_min) / (high_max - low_min))
-            stoch_d = stoch_k.rolling(3).mean()
-            features[f'{prefix}stoch_k_{stoch_period}'] = stoch_k
-            features[f'{prefix}stoch_d_{stoch_period}'] = stoch_d
-
-        return features
-
-    def _add_microstructure_features(
-            self,
-            features: pd.DataFrame,
-            df: pd.DataFrame
-    ) -> pd.DataFrame:
-        """Р”РѕР±Р°РІР»РµРЅРёРµ РїСЂРёР·РЅР°РєРѕРІ РјРёРєСЂРѕСЃС‚СЂСѓРєС‚СѓСЂС‹ СЂС‹РЅРєР°"""
-        # РЎРїСЂРµРґ Рё РґРёР°РїР°Р·РѕРЅ
-        features['spread'] = df['high'] - df['low']
-        features['spread_pct'] = features['spread'] / df['close']
-        features['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
-        features['weighted_close'] = (df['high'] + df['low'] + 2 * df['close']) / 4
-
-        # Р­С„С„РµРєС‚РёРІРЅРѕСЃС‚СЊ РґРІРёР¶РµРЅРёСЏ
-        for period in [5, 10, 20]:
-            price_change = df['close'].diff(period).abs()
-            path_length = df['spread'].rolling(period).sum()
-            features[f'efficiency_ratio_{period}'] = price_change / path_length
-
-        # РђРјРїР»РёС‚СѓРґР° Рё СЂР°Р·РјР°С…
-        for period in [5, 10, 20, 50]:
-            features[f'amplitude_{period}'] = (
-                                                      df['high'].rolling(period).max() -
-                                                      df['low'].rolling(period).min()
-                                              ) / df['close'].rolling(period).mean()
-
-        # Р”РёСЃР±Р°Р»Р°РЅСЃ РѕР±СЉС‘РјРѕРІ
-        if 'taker_buy_base' in df.columns:
-            features['buy_sell_imbalance'] = (
-                                                     2 * df['taker_buy_base'] - df['volume']
-                                             ) / df['volume']
-            features['buy_pressure'] = df['taker_buy_base'] / df['volume']
-
-        return features
-
-    def _add_volume_features(self, features: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
-        """Р”РѕР±Р°РІР»РµРЅРёРµ РѕР±СЉС‘РјРЅС‹С… РїСЂРёР·РЅР°РєРѕРІ"""
-        # РћР±СЉС‘РјРЅС‹Рµ РѕС‚РЅРѕС€РµРЅРёСЏ
-        for period in [5, 10, 20, 50]:
-            features[f'volume_ma_{period}'] = df['volume'].rolling(period).mean()
-            features[f'volume_ratio_{period}'] = df['volume'] / features[f'volume_ma_{period}']
-            features[f'volume_std_{period}'] = df['volume'].rolling(period).std()
-
-        # VWAP
-        for period in [10, 20, 50]:
-            cum_volume = df['volume'].rolling(period).sum()
-            cum_pv = (df['close'] * df['volume']).rolling(period).sum()
-            vwap = cum_pv / cum_volume
-            features[f'vwap_{period}'] = vwap
-            features[f'price_to_vwap_{period}'] = df['close'] / vwap
-
-        # OBV (On-Balance Volume)
-        obv = (np.sign(df['close'].diff()) * df['volume']).cumsum()
-        features['obv'] = obv
-        features['obv_ma_10'] = obv.rolling(10).mean()
-        features['obv_slope'] = obv.diff()
-
-        # Accumulation/Distribution
-        mfm = ((df['close'] - df['low']) - (df['high'] - df['close'])) / (df['high'] - df['low'])
-        mfv = mfm * df['volume']
-        features['acc_dist'] = mfv.cumsum()
-
-        # Chaikin Money Flow
-        for period in [10, 20]:
-            features[f'cmf_{period}'] = mfv.rolling(period).sum() / df['volume'].rolling(period).sum()
-
-        # Volume Rate of Change
-        for period in [5, 10, 20]:
-            features[f'vroc_{period}'] = df['volume'].pct_change(period)
-
-        return features
-
-    def _add_pattern_features(self, features: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
-        """Р”РѕР±Р°РІР»РµРЅРёРµ СЃРІРµС‡РЅС‹С… РїР°С‚С‚РµСЂРЅРѕРІ"""
-        # Р‘Р°Р·РѕРІС‹Рµ СЃРІРµС‡РЅС‹Рµ РїР°С‚С‚РµСЂРЅС‹
-        body = df['close'] - df['open']
-        body_abs = abs(body)
-
-        # Doji
-        features['is_doji'] = (body_abs / df['open'] < 0.001).astype(int)
-
-        # Hammer/Hanging Man
-        lower_shadow = df[['open', 'close']].min(axis=1) - df['low']
-        upper_shadow = df['high'] - df[['open', 'close']].max(axis=1)
-        features['is_hammer'] = (
-                (lower_shadow > body_abs * 2) &
-                (upper_shadow < body_abs * 0.1)
-        ).astype(int)
-
-        # Engulfing
-        prev_body = body.shift(1)
-        features['bullish_engulfing'] = (
-                (body > 0) &
-                (prev_body < 0) &
-                (df['open'] < df['close'].shift(1)) &
-                (df['close'] > df['open'].shift(1))
-        ).astype(int)
-
-        features['bearish_engulfing'] = (
-                (body < 0) &
-                (prev_body > 0) &
-                (df['open'] > df['close'].shift(1)) &
-                (df['close'] < df['open'].shift(1))
-        ).astype(int)
-
-        # РџР°С‚С‚РµСЂРЅС‹ С‚СЂРµРЅРґР°
-        for period in [5, 10, 20]:
-            # Higher Highs and Higher Lows (uptrend)
-            hh = df['high'] > df['high'].shift(period)
-            hl = df['low'] > df['low'].shift(period)
-            features[f'uptrend_{period}'] = (hh & hl).astype(int)
-
-            # Lower Highs and Lower Lows (downtrend)
-            lh = df['high'] < df['high'].shift(period)
-            ll = df['low'] < df['low'].shift(period)
-            features[f'downtrend_{period}'] = (lh & ll).astype(int)
-
-        return features
-
-    def _add_statistical_features(self, features: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
-        """Р”РѕР±Р°РІР»РµРЅРёРµ СЃС‚Р°С‚РёСЃС‚РёС‡РµСЃРєРёС… РїСЂРёР·РЅР°РєРѕРІ"""
-        # РЎРєРѕР»СЊР·СЏС‰РёРµ СЃС‚Р°С‚РёСЃС‚РёРєРё
-        for period in [5, 10, 20, 50]:
-            returns = df['close'].pct_change()
-
-            # РњРѕРјРµРЅС‚С‹ СЂР°СЃРїСЂРµРґРµР»РµРЅРёСЏ
-            features[f'returns_mean_{period}'] = returns.rolling(period).mean()
-            features[f'returns_std_{period}'] = returns.rolling(period).std()
-            features[f'returns_skew_{period}'] = returns.rolling(period).skew()
-            features[f'returns_kurt_{period}'] = returns.rolling(period).kurt()
-
-            # РљРІР°РЅС‚РёР»Рё
-            features[f'returns_q25_{period}'] = returns.rolling(period).quantile(0.25)
-            features[f'returns_q75_{period}'] = returns.rolling(period).quantile(0.75)
-            features[f'returns_iqr_{period}'] = features[f'returns_q75_{period}'] - features[f'returns_q25_{period}']
-
-            # РђРІС‚РѕРєРѕСЂСЂРµР»СЏС†РёСЏ
-            for lag in [1, 3, 5]:
-                features[f'autocorr_{period}_lag{lag}'] = returns.rolling(period).apply(
-                    lambda x: x.autocorr(lag=lag) if len(x) > lag else np.nan
+        for symbol in settings.trading.SYMBOLS[:3]:  # Начнём с первых 3 символов
+            try:
+                # Загружаем данные для основного таймфрейма
+                df = await self.data_collector.fetch_historical_data(
+                    symbol=symbol,
+                    interval=settings.trading.PRIMARY_TIMEFRAME,
+                    days_back=7,
+                    limit=500
                 )
 
-        # Z-score
-        for period in [10, 20, 50]:
-            mean = df['close'].rolling(period).mean()
-            std = df['close'].rolling(period).std()
-            features[f'zscore_{period}'] = (df['close'] - mean) / std
+                self.market_data[symbol] = df
 
-        # Percentile rank
-        for period in [20, 50, 100]:
-            features[f'percentile_rank_{period}'] = df['close'].rolling(period).apply(
-                lambda x: pd.Series(x).rank(pct=True).iloc[-1]
-            )
-
-        return features
-
-    def _add_interaction_features(self, features: pd.DataFrame) -> pd.DataFrame:
-        """Р”РѕР±Р°РІР»РµРЅРёРµ РІР·Р°РёРјРѕРґРµР№СЃС‚РІРёР№ РјРµР¶РґСѓ РїСЂРёР·РЅР°РєР°РјРё"""
-        # Р’Р°Р¶РЅС‹Рµ РІР·Р°РёРјРѕРґРµР№СЃС‚РІРёСЏ
-        if 'tf15_rsi_14' in features.columns and 'tf15_macd' in features.columns:
-            features['rsi_macd_interaction'] = features['tf15_rsi_14'] * features['tf15_macd']
-
-        if 'volume_ratio_10' in features.columns and 'returns_1' in features.columns:
-            features['volume_return_interaction'] = features['volume_ratio_10'] * features['returns_1']
-
-        if 'tf15_bb_position_20' in features.columns and 'tf15_rsi_14' in features.columns:
-            features['bb_rsi_interaction'] = features['tf15_bb_position_20'] * features['tf15_rsi_14']
-
-        # РџРѕР»РёРЅРѕРјРёР°Р»СЊРЅС‹Рµ РїСЂРёР·РЅР°РєРё РґР»СЏ РєР»СЋС‡РµРІС‹С… РёРЅРґРёРєР°С‚РѕСЂРѕРІ
-        key_features = ['returns_1', 'volume_ratio_10', 'tf15_rsi_14']
-        for feat in key_features:
-            if feat in features.columns:
-                features[f'{feat}_squared'] = features[feat] ** 2
-                features[f'{feat}_cubed'] = features[feat] ** 3
-
-        return features
-
-    def fit_transform(self, features: pd.DataFrame) -> np.ndarray:
-        """РќРѕСЂРјР°Р»РёР·Р°С†РёСЏ РїСЂРёР·РЅР°РєРѕРІ"""
-        # Р—Р°РїРѕР»РЅСЏРµРј РїСЂРѕРїСѓСЃРєРё
-        features = features.fillna(method='ffill').fillna(0)
-
-        # Р—Р°РјРµРЅСЏРµРј Р±РµСЃРєРѕРЅРµС‡РЅРѕСЃС‚Рё
-        features = features.replace([np.inf, -np.inf], 0)
-
-        # РќРѕСЂРјР°Р»РёР·Р°С†РёСЏ
-        return self.scaler.fit_transform(features)
-
-    def transform(self, features: pd.DataFrame) -> np.ndarray:
-        """РўСЂР°РЅСЃС„РѕСЂРјР°С†РёСЏ РїСЂРёР·РЅР°РєРѕРІ"""
-        features = features.fillna(method='ffill').fillna(0)
-        features = features.replace([np.inf, -np.inf], 0)
-        return self.scaler.transform(features)
-
-
-class CryptoMLEngine:
-    """РћСЃРЅРѕРІРЅРѕР№ ML РґРІРёР¶РѕРє РґР»СЏ РїСЂРµРґСЃРєР°Р·Р°РЅРёР№"""
-
-    def __init__(self):
-        self.feature_engineering = FeatureEngineering()
-        self.xgb_model = None
-        self.lgb_model = None
-        self.ensemble_weights = {'xgboost': 0.6, 'lightgbm': 0.4}  # XGBoost РїРѕРєР°Р·Р°Р» Р»СѓС‡С€РёРµ СЂРµР·СѓР»СЊС‚Р°С‚С‹
-        self.models_path = Path("models")
-        self.models_path.mkdir(exist_ok=True)
-
-        # РџР°СЂР°РјРµС‚СЂС‹ РјРѕРґРµР»РµР№ (РѕРїС‚РёРјРёР·РёСЂРѕРІР°РЅРЅС‹Рµ РґР»СЏ РєСЂРёРїС‚Рѕ)
-        self.xgb_params = {
-            'objective': 'multi:softprob',
-            'num_class': 3,  # DOWN, NEUTRAL, UP
-            'max_depth': 6,
-            'learning_rate': 0.01,
-            'n_estimators': 1000,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'reg_alpha': 0.1,
-            'reg_lambda': 1,
-            'random_state': 42,
-            'n_jobs': -1,
-            'tree_method': 'hist',  # Р‘С‹СЃС‚СЂРµРµ РґР»СЏ Р±РѕР»СЊС€РёС… РґР°С‚Р°СЃРµС‚РѕРІ
-            'predictor': 'cpu_predictor'
-        }
-
-        self.lgb_params = {
-            'objective': 'multiclass',
-            'num_class': 3,
-            'metric': 'multi_logloss',
-            'num_leaves': 31,
-            'learning_rate': 0.01,
-            'n_estimators': 1000,
-            'feature_fraction': 0.8,
-            'bagging_fraction': 0.8,
-            'bagging_freq': 5,
-            'lambda_l1': 0.1,
-            'lambda_l2': 1,
-            'min_child_samples': 20,
-            'random_state': 42,
-            'n_jobs': -1,
-            'device': 'cpu'
-        }
-
-        # Р‘СѓС„РµСЂ РґР»СЏ online learning
-        self.online_buffer = []
-        self.online_buffer_size = 50
-        self.last_training_time = None
-
-    def prepare_target(
-            self,
-            df: pd.DataFrame,
-            lookahead: int = 5,
-            threshold: float = 0.002
-    ) -> pd.Series:
-        """
-        РџРѕРґРіРѕС‚РѕРІРєР° С†РµР»РµРІРѕР№ РїРµСЂРµРјРµРЅРЅРѕР№
-
-        Args:
-            df: DataFrame СЃ С†РµРЅР°РјРё
-            lookahead: РџРµСЂРёРѕРґ РїСЂРµРґСЃРєР°Р·Р°РЅРёСЏ (СЃРІРµС‡РµР№ РІРїРµСЂС‘Рґ)
-            threshold: РџРѕСЂРѕРі РґР»СЏ РєР»Р°СЃСЃРёС„РёРєР°С†РёРё (0.2%)
-
-        Returns:
-            Series СЃ РјРµС‚РєР°РјРё РєР»Р°СЃСЃРѕРІ: 0=DOWN, 1=NEUTRAL, 2=UP
-        """
-        future_returns = df['close'].shift(-lookahead) / df['close'] - 1
-
-        # РљР»Р°СЃСЃРёС„РёРєР°С†РёСЏ
-        target = pd.Series(index=df.index, dtype=int)
-        target[future_returns < -threshold] = 0  # DOWN
-        target[future_returns > threshold] = 2  # UP
-        target[(future_returns >= -threshold) & (future_returns <= threshold)] = 1  # NEUTRAL
-
-        return target
-
-    @log_performance("train_models")
-    async def train(
-            self,
-            df: pd.DataFrame,
-            validation_split: float = 0.2
-    ) -> Dict[str, Any]:
-        """
-        РћР±СѓС‡РµРЅРёРµ РјРѕРґРµР»РµР№
-
-        Args:
-            df: DataFrame СЃ OHLCV РґР°РЅРЅС‹РјРё
-            validation_split: Р”РѕР»СЏ РІР°Р»РёРґР°С†РёРѕРЅРЅРѕР№ РІС‹Р±РѕСЂРєРё
-
-        Returns:
-            РЎР»РѕРІР°СЂСЊ СЃ РјРµС‚СЂРёРєР°РјРё РѕР±СѓС‡РµРЅРёСЏ
-        """
-        try:
-            logger.logger.info("Starting model training")
-
-            # РЎРѕР·РґР°РЅРёРµ РїСЂРёР·РЅР°РєРѕРІ
-            features = self.feature_engineering.create_features(df)
-            X = self.feature_engineering.fit_transform(features)
-
-            # РџРѕРґРіРѕС‚РѕРІРєР° С†РµР»РµРІРѕР№ РїРµСЂРµРјРµРЅРЅРѕР№
-            y = self.prepare_target(df)
-
-            # РЈРґР°Р»СЏРµРј NaN
-            mask = ~(np.isnan(X).any(axis=1) | y.isna())
-            X = X[mask]
-            y = y[mask].values
-
-            # Р Р°Р·РґРµР»РµРЅРёРµ РЅР° train/validation (РІСЂРµРјРµРЅРЅРѕР№ СЃРїР»РёС‚)
-            split_idx = int(len(X) * (1 - validation_split))
-            X_train, X_val = X[:split_idx], X[split_idx:]
-            y_train, y_val = y[:split_idx], y[split_idx:]
-
-            logger.logger.info(f"Training set: {X_train.shape}, Validation set: {X_val.shape}")
-
-            # РћР±СѓС‡РµРЅРёРµ XGBoost
-            start_time = datetime.utcnow()
-            self.xgb_model = xgb.XGBClassifier(**self.xgb_params)
-            self.xgb_model.fit(
-                X_train, y_train,
-                eval_set=[(X_val, y_val)],
-                early_stopping_rounds=50,
-                verbose=False
-            )
-            xgb_time = (datetime.utcnow() - start_time).total_seconds()
-
-            # РџСЂРµРґСЃРєР°Р·Р°РЅРёСЏ XGBoost
-            xgb_pred = self.xgb_model.predict(X_val)
-            xgb_proba = self.xgb_model.predict_proba(X_val)
-            xgb_accuracy = accuracy_score(y_val, xgb_pred)
-
-            logger.logger.info(f"XGBoost trained in {xgb_time:.2f}s, accuracy: {xgb_accuracy:.4f}")
-            metrics_collector.ml_training_time.labels(model="xgboost").observe(xgb_time)
-            metrics_collector.ml_accuracy.labels(model="xgboost").set(xgb_accuracy)
-
-            # РћР±СѓС‡РµРЅРёРµ LightGBM
-            start_time = datetime.utcnow()
-            self.lgb_model = lgb.LGBMClassifier(**self.lgb_params)
-            self.lgb_model.fit(
-                X_train, y_train,
-                eval_set=[(X_val, y_val)],
-                callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)]
-            )
-            lgb_time = (datetime.utcnow() - start_time).total_seconds()
-
-            # РџСЂРµРґСЃРєР°Р·Р°РЅРёСЏ LightGBM
-            lgb_pred = self.lgb_model.predict(X_val)
-            lgb_proba = self.lgb_model.predict_proba(X_val)
-            lgb_accuracy = accuracy_score(y_val, lgb_pred)
-
-            logger.logger.info(f"LightGBM trained in {lgb_time:.2f}s, accuracy: {lgb_accuracy:.4f}")
-            metrics_collector.ml_training_time.labels(model="lightgbm").observe(lgb_time)
-            metrics_collector.ml_accuracy.labels(model="lightgbm").set(lgb_accuracy)
-
-            # РђРЅСЃР°РјР±Р»РµРІС‹Рµ РїСЂРµРґСЃРєР°Р·Р°РЅРёСЏ
-            ensemble_proba = (
-                    self.ensemble_weights['xgboost'] * xgb_proba +
-                    self.ensemble_weights['lightgbm'] * lgb_proba
-            )
-            ensemble_pred = np.argmax(ensemble_proba, axis=1)
-            ensemble_accuracy = accuracy_score(y_val, ensemble_pred)
-
-            logger.logger.info(f"Ensemble accuracy: {ensemble_accuracy:.4f}")
-            metrics_collector.ml_accuracy.labels(model="ensemble").set(ensemble_accuracy)
-
-            # Р”РѕРїРѕР»РЅРёС‚РµР»СЊРЅС‹Рµ РјРµС‚СЂРёРєРё
-            metrics = {
-                'xgboost': {
-                    'accuracy': xgb_accuracy,
-                    'precision': precision_score(y_val, xgb_pred, average='weighted'),
-                    'recall': recall_score(y_val, xgb_pred, average='weighted'),
-                    'f1': f1_score(y_val, xgb_pred, average='weighted'),
-                    'training_time': xgb_time
-                },
-                'lightgbm': {
-                    'accuracy': lgb_accuracy,
-                    'precision': precision_score(y_val, lgb_pred, average='weighted'),
-                    'recall': recall_score(y_val, lgb_pred, average='weighted'),
-                    'f1': f1_score(y_val, lgb_pred, average='weighted'),
-                    'training_time': lgb_time
-                },
-                'ensemble': {
-                    'accuracy': ensemble_accuracy,
-                    'precision': precision_score(y_val, ensemble_pred, average='weighted'),
-                    'recall': recall_score(y_val, ensemble_pred, average='weighted'),
-                    'f1': f1_score(y_val, ensemble_pred, average='weighted')
-                }
-            }
-
-            # Р’Р°Р¶РЅРѕСЃС‚СЊ РїСЂРёР·РЅР°РєРѕРІ
-            feature_importance = self._get_feature_importance()
-
-            # РЎРѕС…СЂР°РЅРµРЅРёРµ РјРѕРґРµР»РµР№
-            await self.save_models()
-
-            self.last_training_time = datetime.utcnow()
-
-            return {
-                'metrics': metrics,
-                'feature_importance': feature_importance,
-                'training_samples': len(X_train),
-                'validation_samples': len(X_val)
-            }
-
-        except Exception as e:
-            logger.logger.error(f"Error: {e}, context: {"context": "Model training failed"}")
-            raise
-
-    async def predict(
-            self,
-            df: pd.DataFrame,
-            return_proba: bool = True
-    ) -> Dict[str, Any]:
-        """
-        РџСЂРµРґСЃРєР°Р·Р°РЅРёРµ РЅР° РЅРѕРІС‹С… РґР°РЅРЅС‹С…
-
-        Args:
-            df: DataFrame СЃ OHLCV РґР°РЅРЅС‹РјРё
-            return_proba: Р’РѕР·РІСЂР°С‰Р°С‚СЊ РІРµСЂРѕСЏС‚РЅРѕСЃС‚Рё РєР»Р°СЃСЃРѕРІ
-
-        Returns:
-            РЎР»РѕРІР°СЂСЊ СЃ РїСЂРµРґСЃРєР°Р·Р°РЅРёСЏРјРё
-        """
-        if not self.xgb_model or not self.lgb_model:
-            raise ValueError("Models not trained. Call train() first.")
-
-        try:
-            # РЎРѕР·РґР°РЅРёРµ РїСЂРёР·РЅР°РєРѕРІ
-            features = self.feature_engineering.create_features(df)
-            X = self.feature_engineering.transform(features)
-
-            # РџСЂРµРґСЃРєР°Р·Р°РЅРёСЏ XGBoost
-            xgb_proba = self.xgb_model.predict_proba(X[-1:])
-
-            # РџСЂРµРґСЃРєР°Р·Р°РЅРёСЏ LightGBM
-            lgb_proba = self.lgb_model.predict_proba(X[-1:])
-
-            # РђРЅСЃР°РјР±Р»СЊ
-            ensemble_proba = (
-                    self.ensemble_weights['xgboost'] * xgb_proba +
-                    self.ensemble_weights['lightgbm'] * lgb_proba
-            )[0]
-
-            # РљР»Р°СЃСЃ СЃ РјР°РєСЃРёРјР°Р»СЊРЅРѕР№ РІРµСЂРѕСЏС‚РЅРѕСЃС‚СЊСЋ
-            prediction = np.argmax(ensemble_proba)
-            confidence = ensemble_proba[prediction]
-
-            # Р—Р°РїРёСЃС‹РІР°РµРј РјРµС‚СЂРёРєРё
-            metrics_collector.ml_predictions.labels(
-                model="ensemble",
-                prediction_type=["DOWN", "NEUTRAL", "UP"][prediction]
-            ).inc()
-            metrics_collector.ml_confidence.labels(model="ensemble").observe(confidence)
-
-            result = {
-                'prediction': prediction,
-                'prediction_label': ["DOWN", "NEUTRAL", "UP"][prediction],
-                'confidence': float(confidence),
-                'timestamp': datetime.utcnow().isoformat()
-            }
-
-            if return_proba:
-                result['probabilities'] = {
-                    'down': float(ensemble_proba[0]),
-                    'neutral': float(ensemble_proba[1]),
-                    'up': float(ensemble_proba[2])
-                }
-                result['model_probabilities'] = {
-                    'xgboost': {
-                        'down': float(xgb_proba[0][0]),
-                        'neutral': float(xgb_proba[0][1]),
-                        'up': float(xgb_proba[0][2])
-                    },
-                    'lightgbm': {
-                        'down': float(lgb_proba[0][0]),
-                        'neutral': float(lgb_proba[0][1]),
-                        'up': float(lgb_proba[0][2])
+                # Сохраняем последние индикаторы
+                if not df.empty:
+                    self.indicators[symbol] = {
+                        'rsi': df['rsi'].iloc[-1] if 'rsi' in df.columns else 50,
+                        'macd': df['macd'].iloc[-1] if 'macd' in df.columns else 0,
+                        'bb_position': df['bb_percent'].iloc[-1] if 'bb_percent' in df.columns else 0.5,
+                        'volume_ratio': df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 1,
+                        'atr': df['atr'].iloc[-1] if 'atr' in df.columns else 0
                     }
-                }
 
-            return result
+                logger.logger.info(f"Loaded {len(df)} candles for {symbol}")
 
-        except Exception as e:
-            logger.logger.error(f"Error: {e}, context: {"context": "Prediction failed"}")
-            raise
+            except Exception as e:
+                logger.logger.warning(f"Failed to load data for {symbol}: {e}")
 
-    async def online_update(self, X_new: np.ndarray, y_new: int):
-        """
-        РћРЅР»Р°Р№РЅ РѕР±РЅРѕРІР»РµРЅРёРµ РјРѕРґРµР»Рё
+    async def _initialize_ml(self):
+        """Инициализация ML моделей"""
+        try:
+            # Пытаемся загрузить существующие модели
+            await ml_engine.load_models()
+            logger.logger.info("ML models loaded from disk")
+        except:
+            logger.logger.info("No saved models found, will train on first suitable data")
 
-        Args:
-            X_new: РќРѕРІС‹Рµ РїСЂРёР·РЅР°РєРё
-            y_new: РќРѕРІР°СЏ РјРµС‚РєР°
-        """
-        if not settings.ml.ENABLE_ONLINE_LEARNING:
+    async def _start_websocket_streams(self):
+        """Запуск WebSocket стримов для реальных данных"""
+        if not self.connected:
+            logger.logger.warning("Skipping websocket streams - not connected to Binance")
             return
 
-        # Р”РѕР±Р°РІР»СЏРµРј РІ Р±СѓС„РµСЂ
-        self.online_buffer.append((X_new, y_new))
-
-        # РћР±РЅРѕРІР»СЏРµРј РµСЃР»Рё Р±СѓС„РµСЂ Р·Р°РїРѕР»РЅРµРЅ
-        if len(self.online_buffer) >= self.online_buffer_size:
-            X_batch = np.array([x for x, _ in self.online_buffer])
-            y_batch = np.array([y for _, y in self.online_buffer])
-
-            # Р§Р°СЃС‚РёС‡РЅРѕРµ РѕР±СѓС‡РµРЅРёРµ XGBoost
-            if self.xgb_model:
-                self.xgb_model.fit(
-                    X_batch, y_batch,
-                    xgb_model=self.xgb_model.get_booster(),
-                    verbose=False
-                )
-
-            # LightGBM РЅРµ РїРѕРґРґРµСЂР¶РёРІР°РµС‚ РёРЅРєСЂРµРјРµРЅС‚Р°Р»СЊРЅРѕРµ РѕР±СѓС‡РµРЅРёРµ РЅР°РїСЂСЏРјСѓСЋ,
-            # РЅРѕ РјРѕР¶РЅРѕ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ init_model
-            if self.lgb_model:
-                self.lgb_model.fit(
-                    X_batch, y_batch,
-                    init_model=self.lgb_model,
-                    keep_training_booster=True
-                )
-
-            # РћС‡РёС‰Р°РµРј Р±СѓС„РµСЂ, РѕСЃС‚Р°РІР»СЏСЏ РїРѕСЃР»РµРґРЅРёРµ СЌР»РµРјРµРЅС‚С‹
-            self.online_buffer = self.online_buffer[-25:]
-
-            logger.logger.info("Models updated with online learning")
-
-    def _get_feature_importance(self, top_n: int = 50) -> Dict[str, float]:
-        """РџРѕР»СѓС‡РµРЅРёРµ РІР°Р¶РЅРѕСЃС‚Рё РїСЂРёР·РЅР°РєРѕРІ"""
-        importance = {}
-
-        if self.xgb_model:
-            xgb_importance = self.xgb_model.feature_importances_
-            for i, imp in enumerate(xgb_importance):
-                feat_name = self.feature_engineering.feature_names[i] if i < len(
-                    self.feature_engineering.feature_names) else f"feature_{i}"
-                importance[feat_name] = importance.get(feat_name, 0) + imp * self.ensemble_weights['xgboost']
-
-        if self.lgb_model:
-            lgb_importance = self.lgb_model.feature_importances_
-            for i, imp in enumerate(lgb_importance):
-                feat_name = self.feature_engineering.feature_names[i] if i < len(
-                    self.feature_engineering.feature_names) else f"feature_{i}"
-                importance[feat_name] = importance.get(feat_name, 0) + imp * self.ensemble_weights['lightgbm']
-
-        # РЎРѕСЂС‚РёСЂРѕРІРєР° Рё РІРѕР·РІСЂР°С‚ С‚РѕРї РїСЂРёР·РЅР°РєРѕРІ
-        sorted_importance = dict(sorted(importance.items(), key=lambda x: x[1], reverse=True)[:top_n])
-
-        return sorted_importance
-
-    async def save_models(self):
-        """РЎРѕС…СЂР°РЅРµРЅРёРµ РјРѕРґРµР»РµР№ РЅР° РґРёСЃРє"""
         try:
-            # XGBoost
-            if self.xgb_model:
-                xgb_path = self.models_path / f"xgboost_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pkl"
-                joblib.dump(self.xgb_model, xgb_path)
+            # Подписываемся на стримы свечей
+            await ws_client.subscribe_klines(
+                symbols=settings.trading.SYMBOLS[:3],
+                intervals=[settings.trading.PRIMARY_TIMEFRAME],
+                handler=self._handle_kline_update
+            )
 
-                # РЎРѕС…СЂР°РЅСЏРµРј С‚Р°РєР¶Рµ РїРѕСЃР»РµРґРЅСЋСЋ РІРµСЂСЃРёСЋ
-                joblib.dump(self.xgb_model, self.models_path / "xgboost_latest.pkl")
+            # Подписываемся на тикеры для отслеживания цен
+            await ws_client.subscribe_ticker(
+                symbols=settings.trading.SYMBOLS[:3],
+                handler=self._handle_ticker_update
+            )
 
-            # LightGBM
-            if self.lgb_model:
-                lgb_path = self.models_path / f"lightgbm_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pkl"
-                joblib.dump(self.lgb_model, lgb_path)
-                joblib.dump(self.lgb_model, self.models_path / "lightgbm_latest.pkl")
+            # Запускаем WebSocket клиент
+            await ws_client.start()
 
-            # Scaler
-            scaler_path = self.models_path / "scaler_latest.pkl"
-            joblib.dump(self.feature_engineering.scaler, scaler_path)
-
-            logger.logger.info("Models saved successfully")
+            logger.logger.info("WebSocket streams started")
 
         except Exception as e:
-            logger.logger.error(f"Error: {e}, context: {"context": "Failed to save models"}")
+            logger.logger.error(f"Failed to start websocket streams: {e}")
 
-    async def load_models(self):
-        """Р—Р°РіСЂСѓР·РєР° РјРѕРґРµР»РµР№ СЃ РґРёСЃРєР°"""
+    async def _handle_kline_update(self, data: Dict):
+        """Обработка обновлений свечей"""
+        kline = data.get('k', {})
+        if kline.get('x'):  # Свеча закрылась
+            symbol = kline.get('s')
+            logger.logger.debug(f"Closed candle for {symbol}: {kline.get('c')}")
+
+            # Обновляем рыночные данные
+            await self._update_market_data(symbol)
+
+    async def _handle_ticker_update(self, data: Dict):
+        """Обработка обновлений тикера"""
+        symbol = data.get('s')
+        price = float(data.get('c', 0))
+
+        if symbol and price > 0:
+            # Обновляем текущие цены для позиций
+            if symbol in self.positions:
+                await self._update_position_pnl(symbol, price)
+
+    async def _update_market_data(self, symbol: str):
+        """Обновление рыночных данных и индикаторов"""
         try:
-            xgb_path = self.models_path / "xgboost_latest.pkl"
-            if xgb_path.exists():
-                self.xgb_model = joblib.load(xgb_path)
-                logger.logger.info("XGBoost model loaded")
+            # Получаем свежие данные
+            df = await self.data_collector.fetch_historical_data(
+                symbol=symbol,
+                interval=settings.trading.PRIMARY_TIMEFRAME,
+                days_back=1,
+                limit=100
+            )
 
-            lgb_path = self.models_path / "lightgbm_latest.pkl"
-            if lgb_path.exists():
-                self.lgb_model = joblib.load(lgb_path)
-                logger.logger.info("LightGBM model loaded")
+            if not df.empty:
+                self.market_data[symbol] = df
 
-            scaler_path = self.models_path / "scaler_latest.pkl"
-            if scaler_path.exists():
-                self.feature_engineering.scaler = joblib.load(scaler_path)
-                logger.logger.info("Feature scaler loaded")
+                # Обновляем индикаторы
+                self.indicators[symbol] = {
+                    'rsi': df['rsi'].iloc[-1] if 'rsi' in df.columns else 50,
+                    'macd': df['macd'].iloc[-1] if 'macd' in df.columns else 0,
+                    'bb_position': df['bb_percent'].iloc[-1] if 'bb_percent' in df.columns else 0.5,
+                    'volume_ratio': df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 1,
+                    'atr': df['atr'].iloc[-1] if 'atr' in df.columns else 0,
+                    'price': df['close'].iloc[-1]
+                }
 
         except Exception as e:
-            logger.logger.error(f"Error: {e}, context: {"context": "Failed to load models"}")
+            logger.logger.error(f"Failed to update market data for {symbol}: {e}")
 
-    def should_retrain(self) -> bool:
-        """РџСЂРѕРІРµСЂРєР° РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё РїРµСЂРµРѕР±СѓС‡РµРЅРёСЏ"""
-        if not self.last_training_time:
-            return True
+    async def run(self):
+        """Основной торговый цикл"""
+        self.running = True
+        logger.logger.info("Starting Advanced Paper Trading Bot main loop")
 
-        hours_since_training = (datetime.utcnow() - self.last_training_time).total_seconds() / 3600
-        return hours_since_training >= settings.ml.RETRAIN_INTERVAL_HOURS
+        analysis_counter = 0
 
+        try:
+            while self.running:
+                # Анализируем рынок каждые 30 секунд
+                if analysis_counter % 6 == 0:  # 30 секунд (5 сек * 6)
+                    await self._analyze_and_trade()
 
-# Р“Р»РѕР±Р°Р»СЊРЅС‹Р№ СЌРєР·РµРјРїР»СЏСЂ
-ml_engine = CryptoMLEngine()
+                # Обновляем позиции
+                await self._update_positions()
 
+                # Проверяем риски
+                await self._check_risk_limits()
 
-# Р’СЃРїРѕРјРѕРіР°С‚РµР»СЊРЅС‹Рµ С„СѓРЅРєС†РёРё
-async def init_ml_engine():
-    """РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ ML РґРІРёР¶РєР°"""
-    await ml_engine.load_models()
-    logger.logger.info("ML Engine initialized")
-    return ml_engine
+                # Логируем статус каждую минуту
+                if analysis_counter % 12 == 0:  # 60 секунд
+                    await self._log_status()
+                    analysis_counter = 0
+
+                analysis_counter += 1
+                await asyncio.sleep(5)
+
+        except asyncio.CancelledError:
+            logger.logger.info("Trading loop cancelled")
+        except Exception as e:
+            logger.logger.error(f"Error in trading loop: {e}")
+            raise
+        finally:
+            logger.logger.info("Advanced Paper Trading Bot main loop stopped")
+
+    async def _analyze_and_trade(self):
+        """Анализ рынка и принятие торговых решений"""
+        for symbol in settings.trading.SYMBOLS[:3]:
+            try:
+                # Пропускаем если нет данных
+                if symbol not in self.market_data:
+                    continue
+
+                df = self.market_data[symbol]
+                if df.empty or len(df) < 50:
+                    continue
+
+                # Получаем текущие индикаторы
+                indicators = self.indicators.get(symbol, {})
+                current_price = indicators.get('price', df['close'].iloc[-1])
+
+                # Генерируем торговые сигналы
+                signal = await self._generate_trading_signal(symbol, df, indicators)
+
+                if signal['action'] != 'HOLD':
+                    logger.logger.info(
+                        f"Signal generated for {symbol}",
+                        action=signal['action'],
+                        confidence=signal['confidence'],
+                        reasons=signal['reasons']
+                    )
+
+                    # Выполняем сделку если сигнал достаточно сильный
+                    if signal['confidence'] >= 0.65:
+                        await self._execute_trade(symbol, signal, current_price)
+
+            except Exception as e:
+                logger.logger.error(f"Analysis failed for {symbol}: {e}")
+
+    async def _generate_trading_signal(self, symbol: str, df: pd.DataFrame, indicators: Dict) -> Dict:
+        """Генерация торгового сигнала на основе множественных стратегий"""
+        signal = {
+            'action': 'HOLD',
+            'confidence': 0.0,
+            'reasons': [],
+            'stop_loss': None,
+            'take_profit': None
+        }
+
+        buy_signals = 0
+        sell_signals = 0
+        total_weight = 0
+
+        # 1. RSI стратегия
+        rsi = indicators.get('rsi', 50)
+        if rsi < settings.signals.RSI_OVERSOLD:
+            buy_signals += 1
+            signal['reasons'].append(f"RSI oversold ({rsi:.1f})")
+        elif rsi > settings.signals.RSI_OVERBOUGHT:
+            sell_signals += 1
+            signal['reasons'].append(f"RSI overbought ({rsi:.1f})")
+
+        # 2. MACD стратегия
+        macd = indicators.get('macd', 0)
+        macd_signal = df['macd_signal'].iloc[-1] if 'macd_signal' in df.columns else 0
+        if macd > macd_signal and macd < 0:
+            buy_signals += 1
+            signal['reasons'].append("MACD bullish crossover")
+        elif macd < macd_signal and macd > 0:
+            sell_signals += 1
+            signal['reasons'].append("MACD bearish crossover")
+
+        # 3. Bollinger Bands стратегия
+        bb_position = indicators.get('bb_position', 0.5)
+        if bb_position < 0.2:
+            buy_signals += 1
+            signal['reasons'].append(f"Price near lower BB ({bb_position:.2f})")
+        elif bb_position > 0.8:
+            sell_signals += 1
+            signal['reasons'].append(f"Price near upper BB ({bb_position:.2f})")
+
+        # 4. Volume подтверждение
+        volume_ratio = indicators.get('volume_ratio', 1)
+        if volume_ratio > settings.signals.MIN_VOLUME_RATIO:
+            total_weight += 0.2
+            signal['reasons'].append(f"High volume ({volume_ratio:.1f}x)")
+
+        # 5. ML предсказание (если модель обучена)
+        if hasattr(ml_engine, 'xgb_model') and ml_engine.xgb_model is not None:
+            try:
+                ml_prediction = await ml_engine.predict(df, return_proba=True)
+                if ml_prediction['prediction_label'] == 'UP' and ml_prediction['confidence'] > 0.65:
+                    buy_signals += 2  # ML сигнал имеет больший вес
+                    signal['reasons'].append(f"ML: UP ({ml_prediction['confidence']:.1%})")
+                elif ml_prediction['prediction_label'] == 'DOWN' and ml_prediction['confidence'] > 0.65:
+                    sell_signals += 2
+                    signal['reasons'].append(f"ML: DOWN ({ml_prediction['confidence']:.1%})")
+            except:
+                pass  # Игнорируем ошибки ML
+
+        # Определяем финальное действие
+        total_signals = buy_signals + sell_signals
+        if total_signals > 0:
+            if buy_signals > sell_signals and buy_signals >= 2:
+                signal['action'] = 'BUY'
+                signal['confidence'] = buy_signals / 5.0  # Нормализуем к [0, 1]
+
+                # Рассчитываем стоп-лосс и тейк-профит
+                atr = indicators.get('atr', df['close'].iloc[-1] * 0.02)
+                signal['stop_loss'] = df['close'].iloc[-1] - (atr * settings.trading.STOP_LOSS_ATR_MULTIPLIER)
+                signal['take_profit'] = df['close'].iloc[-1] + (
+                        atr * settings.trading.STOP_LOSS_ATR_MULTIPLIER * settings.trading.TAKE_PROFIT_RR_RATIO)
+
+            elif sell_signals > buy_signals and sell_signals >= 2:
+                signal['action'] = 'SELL'
+                signal['confidence'] = sell_signals / 5.0
+
+                atr = indicators.get('atr', df['close'].iloc[-1] * 0.02)
+                signal['stop_loss'] = df['close'].iloc[-1] + (atr * settings.trading.STOP_LOSS_ATR_MULTIPLIER)
+                signal['take_profit'] = df['close'].iloc[-1] - (
+                        atr * settings.trading.STOP_LOSS_ATR_MULTIPLIER * settings.trading.TAKE_PROFIT_RR_RATIO)
+
+        return signal
+
+    async def _execute_trade(self, symbol: str, signal: Dict, current_price: float):
+        """Выполнение торговой операции"""
+        try:
+            # Проверяем, есть ли уже позиция по этому символу
+            if symbol in self.positions:
+                logger.logger.info(f"Position already exists for {symbol}")
+                return
+
+            # Рассчитываем размер позиции
+            position_size = self.risk_manager.position_sizer.calculate_position_size(
+                entry_price=current_price,
+                stop_loss_price=signal['stop_loss'],
+                account_balance=self.current_balance
+            )
+
+            # Проверяем возможность открытия позиции
+            can_open, reason = self.risk_manager.can_open_position(
+                symbol=symbol,
+                proposed_size=position_size * current_price
+            )
+
+            if not can_open:
+                logger.logger.warning(f"Cannot open position for {symbol}: {reason}")
+                return
+
+            # Применяем слиппаж
+            slippage = self.slippage_bps / 10000
+            if signal['action'] == 'BUY':
+                entry_price = current_price * (1 + slippage)
+            else:
+                entry_price = current_price * (1 - slippage)
+
+            # Создаём позицию
+            position = Position(
+                id=f"{symbol}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+                symbol=symbol,
+                side=signal['action'],
+                entry_price=entry_price,
+                quantity=position_size,
+                stop_loss=signal['stop_loss'],
+                take_profit=signal['take_profit'],
+                entry_time=datetime.utcnow(),
+                current_price=entry_price,
+                risk_amount=abs(entry_price - signal['stop_loss']) * position_size
+            )
+
+            # Добавляем позицию
+            self.positions[symbol] = position
+            self.risk_manager.add_position(position)
+
+            # Вычитаем комиссию
+            fee = position_size * entry_price * self.taker_fee
+            self.current_balance -= fee
+
+            # Логируем сделку
+            logger.log_trade(
+                action="open",
+                symbol=symbol,
+                side=signal['action'],
+                price=entry_price,
+                quantity=position_size,
+                order_id=position.id
+            )
+
+            logger.logger.info(
+                f"Position opened",
+                symbol=symbol,
+                side=signal['action'],
+                entry_price=entry_price,
+                size=position_size,
+                stop_loss=signal['stop_loss'],
+                take_profit=signal['take_profit'],
+                reasons=signal['reasons']
+            )
+
+        except Exception as e:
+            logger.logger.error(f"Failed to execute trade for {symbol}: {e}")
+
+    async def _update_positions(self):
+        """Обновление открытых позиций"""
+        for symbol, position in list(self.positions.items()):
+            try:
+                # Получаем текущую цену
+                current_price = self.indicators.get(symbol, {}).get('price')
+                if not current_price:
+                    continue
+
+                # Обновляем позицию в риск-менеджере
+                actions = self.risk_manager.update_position(
+                    position_id=position.id,
+                    current_price=current_price,
+                    atr=self.indicators.get(symbol, {}).get('atr')
+                )
+
+                # Закрываем позицию если нужно
+                if actions.get('action') == 'close':
+                    await self._close_position(symbol, current_price, actions.get('reason', 'manual'))
+
+            except Exception as e:
+                logger.logger.error(f"Failed to update position for {symbol}: {e}")
+
+    async def _close_position(self, symbol: str, close_price: float, reason: str):
+        """Закрытие позиции"""
+        if symbol not in self.positions:
+            return
+
+        position = self.positions[symbol]
+
+        # Рассчитываем P&L
+        if position.side == 'BUY':
+            pnl = (close_price - position.entry_price) * position.quantity
+        else:
+            pnl = (position.entry_price - close_price) * position.quantity
+
+        # Вычитаем комиссию
+        fee = position.quantity * close_price * self.taker_fee
+        pnl -= fee
+
+        # Обновляем баланс
+        self.current_balance += pnl
+
+        # Закрываем в риск-менеджере
+        self.risk_manager.close_position(position.id, close_price, reason)
+
+        # Удаляем позицию
+        del self.positions[symbol]
+
+        # Сохраняем в историю
+        self.trade_history.append({
+            'symbol': symbol,
+            'side': position.side,
+            'entry_price': position.entry_price,
+            'close_price': close_price,
+            'quantity': position.quantity,
+            'pnl': pnl,
+            'reason': reason,
+            'timestamp': datetime.utcnow()
+        })
+
+        # Логируем
+        logger.log_trade(
+            action="close",
+            symbol=symbol,
+            side=position.side,
+            price=close_price,
+            quantity=position.quantity,
+            pnl=pnl,
+            order_id=position.id
+        )
+
+        logger.logger.info(
+            f"Position closed",
+            symbol=symbol,
+            pnl=pnl,
+            reason=reason
+        )
+
+    async def _update_position_pnl(self, symbol: str, current_price: float):
+        """Обновление P&L позиции"""
+        if symbol in self.positions:
+            position = self.positions[symbol]
+            position.current_price = current_price
+
+            if position.side == 'BUY':
+                position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
+            else:
+                position.unrealized_pnl = (position.entry_price - current_price) * position.quantity
+
+    async def _check_risk_limits(self):
+        """Проверка лимитов риска"""
+        risk_metrics = self.risk_manager.get_risk_metrics()
+
+        # Экстренное закрытие при критическом риске
+        if risk_metrics.risk_level.value == "critical":
+            logger.logger.warning("CRITICAL RISK LEVEL - closing all positions")
+            for symbol in list(self.positions.keys()):
+                current_price = self.indicators.get(symbol, {}).get('price', self.positions[symbol].entry_price)
+                await self._close_position(symbol, current_price, "risk_limit")
+
+    async def _log_status(self):
+        """Логирование статуса бота"""
+        total_pnl = sum(pos.unrealized_pnl for pos in self.positions.values())
+
+        status = {
+            "balance": self.current_balance,
+            "positions": len(self.positions),
+            "trades": len(self.trade_history),
+            "realized_pnl": self.current_balance - self.initial_balance,
+            "unrealized_pnl": total_pnl,
+            "total_pnl": (self.current_balance - self.initial_balance) + total_pnl,
+            "return_percent": ((self.current_balance + total_pnl - self.initial_balance) / self.initial_balance) * 100
+        }
+
+        logger.logger.info("Advanced Bot Status", **status)
+
+        # Логируем открытые позиции
+        for symbol, position in self.positions.items():
+            logger.logger.info(
+                f"Position: {symbol}",
+                side=position.side,
+                entry=position.entry_price,
+                current=position.current_price,
+                pnl=position.unrealized_pnl,
+                pnl_percent=(position.unrealized_pnl / (position.entry_price * position.quantity)) * 100
+            )
+
+    async def stop(self):
+        """Остановка бота"""
+        logger.logger.info("Stopping Advanced Paper Trading Bot")
+        self.running = False
+
+        # Закрываем все позиции
+        for symbol in list(self.positions.keys()):
+            current_price = self.indicators.get(symbol, {}).get('price', self.positions[symbol].entry_price)
+            await self._close_position(symbol, current_price, "bot_stopped")
+
+        # Отключаемся от Binance
+        if self.binance_client:
+            await self.binance_client.close_connection()
+
+        # Останавливаем WebSocket
+        await ws_client.stop()
+
+        # Финальный отчёт
+        final_pnl = self.current_balance - self.initial_balance
+        final_return = (final_pnl / self.initial_balance) * 100
+
+        win_trades = [t for t in self.trade_history if t['pnl'] > 0]
+        lose_trades = [t for t in self.trade_history if t['pnl'] < 0]
+
+        logger.logger.info(
+            "Final Report",
+            final_balance=self.current_balance,
+            total_pnl=final_pnl,
+            total_return_percent=final_return,
+            total_trades=len(self.trade_history),
+            winning_trades=len(win_trades),
+            losing_trades=len(lose_trades),
+            win_rate=len(win_trades) / len(self.trade_history) * 100 if self.trade_history else 0
+        )

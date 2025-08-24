@@ -311,7 +311,6 @@ class Application:
             logger.logger.info("Received keyboard interrupt")
         except Exception as e:
             logger.logger.error(f"Application run failed: {e}")
-            logger.logger.error(f"Error: {e}, context: Application run failed")
             raise
         finally:
             await self.cleanup()

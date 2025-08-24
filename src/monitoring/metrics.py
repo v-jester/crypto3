@@ -382,7 +382,7 @@ class MetricsServer:
             })
 
         except Exception as e:
-            logger.logger.error(f"Error: {e}, context: {"context": "Failed to start metrics server"}")
+            logger.logger.error(f"Failed to start metrics server: {e}")
             raise
 
     async def stop(self):
