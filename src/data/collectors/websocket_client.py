@@ -20,7 +20,15 @@ class BinanceWebSocketClient:
     """Асинхронный WebSocket клиент для Binance"""
 
     def __init__(self):
-        self.base_url = "wss://stream.binance.com:9443/ws" if not settings.api.TESTNET else "wss://testnet.binance.vision/ws"
+        # ИСПРАВЛЕНО: правильные URL для testnet
+        if settings.api.TESTNET:
+            # Testnet не поддерживает /stream endpoint
+            self.base_url = "wss://testnet.binance.vision/ws"
+            self.use_combined_streams = False  # Testnet не поддерживает combined streams
+        else:
+            self.base_url = "wss://stream.binance.com:9443/ws"
+            self.use_combined_streams = True
+
         self.streams = {}
         self.connections = {}
         self.handlers = {}
@@ -135,17 +143,30 @@ class BinanceWebSocketClient:
         if not streams:
             return
 
-        # Формируем URL с множественными потоками
-        combined_url = f"{self.base_url.replace('/ws', '/stream')}?streams={'/'.join(streams)}"
-
-        self.streams[name] = {
-            "url": combined_url,
-            "streams": streams,
-            "reconnect_attempts": 0
-        }
-
-        # Запускаем подключение
-        asyncio.create_task(self._maintain_connection(name))
+        if self.use_combined_streams:
+            # Production - используем combined streams
+            combined_url = f"{self.base_url.replace('/ws', '/stream')}?streams={'/'.join(streams)}"
+            self.streams[name] = {
+                "url": combined_url,
+                "streams": streams,
+                "reconnect_attempts": 0
+            }
+            # Запускаем подключение
+            asyncio.create_task(self._maintain_connection(name))
+        else:
+            # Testnet - создаём отдельное соединение для каждого потока
+            for stream in streams:
+                # Для testnet используем отдельный URL для каждого потока
+                stream_url = f"{self.base_url}/{stream}"
+                stream_key = f"{name}_{stream}"
+                self.streams[stream_key] = {
+                    "url": stream_url,
+                    "streams": [stream],
+                    "reconnect_attempts": 0,
+                    "original_name": name
+                }
+                # Запускаем подключение для каждого потока отдельно
+                asyncio.create_task(self._maintain_connection(stream_key))
 
     async def _maintain_connection(self, name: str):
         """Поддержание соединения с автоматическим переподключением"""

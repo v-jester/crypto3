@@ -364,12 +364,11 @@ class MetricsServer:
     async def start(self):
         """Запуск HTTP сервера метрик"""
         try:
-            # Запуск в отдельном потоке
+            # Исправленная версия - убираем registry из параметров
             await asyncio.get_event_loop().run_in_executor(
                 None,
                 start_http_server,
-                self.port,
-                registry=self.collector.registry
+                self.port
             )
 
             logger.logger.info(f"Metrics server started on port {self.port}")

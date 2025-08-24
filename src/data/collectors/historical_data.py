@@ -137,11 +137,13 @@ class HistoricalDataCollector:
             return df
 
         except Exception as e:
-            logger.log_error(e, {
-                "context": "Failed to fetch historical data",
-                "symbol": symbol,
-                "interval": interval
-            })
+            # ИСПРАВЛЕНО: правильный вызов логирования
+            logger.logger.error(
+                f"Failed to fetch historical data: {e}",
+                exc_info=True,
+                symbol=symbol,
+                interval=interval
+            )
             raise
 
     def _add_indicators(self, df: pd.DataFrame):
@@ -222,6 +224,9 @@ class HistoricalDataCollector:
 
             # ROC
             df["roc"] = ta.ROC(df["close"], timeperiod=10)
+
+            # ИСПРАВЛЕНО: используем bfill вместо fillna с method
+            df.bfill(inplace=True)
 
         except Exception as e:
             logger.logger.error(f"Failed to calculate indicators: {e}")

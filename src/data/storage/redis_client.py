@@ -12,12 +12,26 @@ from redis.asyncio import ConnectionPool
 from functools import wraps
 import hashlib
 from src.monitoring.logger import logger, log_performance
+from src.config.settings import settings
 
 
 class RedisClient:
     """Асинхронный Redis клиент с расширенным функционалом"""
 
-    def __init__(self, url: str = "redis://localhost:6379/0", max_connections: int = 50):
+    def __init__(self, url: str = None, max_connections: int = 50):
+        # Используем URL из настроек если не передан явно
+        if url is None:
+            # Правильно формируем URL из настроек
+            redis_port = settings.database.REDIS_PORT
+            redis_host = settings.database.REDIS_HOST
+            redis_db = settings.database.REDIS_DB
+
+            if settings.database.REDIS_PASSWORD:
+                pwd = settings.database.REDIS_PASSWORD.get_secret_value()
+                url = f"redis://:{pwd}@{redis_host}:{redis_port}/{redis_db}"
+            else:
+                url = f"redis://{redis_host}:{redis_port}/{redis_db}"
+
         self.url = url
         self.max_connections = max_connections
         self._pool: Optional[ConnectionPool] = None
@@ -45,7 +59,8 @@ class RedisClient:
 
         except Exception as e:
             logger.logger.error(f"Redis connection failed: {e}")
-            raise
+            # Не бросаем исключение, работаем без кеша
+            self._connected = False
 
     async def disconnect(self):
         """Закрытие соединения"""
@@ -65,12 +80,16 @@ class RedisClient:
         if not self._connected:
             await self.connect()
 
+        if not self._connected:
+            # Redis недоступен, возвращаем False
+            return False
+
         try:
             # Сериализация значения
             if isinstance(value, (str, bytes)):
                 data = value
             else:
-                data = json.dumps(value)
+                data = json.dumps(value, default=str)  # default=str для datetime
 
             if isinstance(data, str):
                 data = data.encode('utf-8')
@@ -79,13 +98,17 @@ class RedisClient:
             return bool(result)
 
         except Exception as e:
-            logger.logger.error(f"Redis set error for key {key}: {e}")
+            logger.logger.debug(f"Redis set error for key {key}: {e}")
             return False
 
     async def get(self, key: str, default: Any = None) -> Any:
         """Получение значения"""
         if not self._connected:
             await self.connect()
+
+        if not self._connected:
+            # Redis недоступен, возвращаем default
+            return default
 
         try:
             value = await self._client.get(key)
@@ -102,20 +125,30 @@ class RedisClient:
                 return value
 
         except Exception as e:
-            logger.logger.error(f"Redis get error for key {key}: {e}")
+            logger.logger.debug(f"Redis get error for key {key}: {e}")
             return default
 
     async def delete(self, *keys: str) -> int:
         """Удаление ключей"""
         if not self._connected:
             await self.connect()
-        return await self._client.delete(*keys)
+        if not self._connected:
+            return 0
+        try:
+            return await self._client.delete(*keys)
+        except Exception:
+            return 0
 
     async def exists(self, *keys: str) -> int:
         """Проверка существования ключей"""
         if not self._connected:
             await self.connect()
-        return await self._client.exists(*keys)
+        if not self._connected:
+            return 0
+        try:
+            return await self._client.exists(*keys)
+        except Exception:
+            return 0
 
     # ============ Работа с хешами ============
 
@@ -123,51 +156,66 @@ class RedisClient:
         """Установка значения в хеш"""
         if not self._connected:
             await self.connect()
+        if not self._connected:
+            return 0
 
-        if not isinstance(value, (str, bytes)):
-            value = json.dumps(value)
-        if isinstance(value, str):
-            value = value.encode('utf-8')
+        try:
+            if not isinstance(value, (str, bytes)):
+                value = json.dumps(value, default=str)
+            if isinstance(value, str):
+                value = value.encode('utf-8')
 
-        return await self._client.hset(name, key, value)
+            return await self._client.hset(name, key, value)
+        except Exception:
+            return 0
 
     async def hget(self, name: str, key: str) -> Any:
         """Получение значения из хеша"""
         if not self._connected:
             await self.connect()
-
-        value = await self._client.hget(name, key)
-        if value is None:
+        if not self._connected:
             return None
 
-        if isinstance(value, bytes):
-            value = value.decode('utf-8')
-
         try:
-            return json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            return value
+            value = await self._client.hget(name, key)
+            if value is None:
+                return None
+
+            if isinstance(value, bytes):
+                value = value.decode('utf-8')
+
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return value
+        except Exception:
+            return None
 
     async def hgetall(self, name: str) -> Dict[str, Any]:
         """Получение всех значений хеша"""
         if not self._connected:
             await self.connect()
+        if not self._connected:
+            return {}
 
-        data = await self._client.hgetall(name)
-        result = {}
+        try:
+            data = await self._client.hgetall(name)
+            result = {}
 
-        for key, value in data.items():
-            if isinstance(key, bytes):
-                key = key.decode('utf-8')
-            if isinstance(value, bytes):
-                value = value.decode('utf-8')
+            for key, value in data.items():
+                if isinstance(key, bytes):
+                    key = key.decode('utf-8')
+                if isinstance(value, bytes):
+                    value = value.decode('utf-8')
 
-            try:
-                result[key] = json.loads(value)
-            except (json.JSONDecodeError, TypeError):
-                result[key] = value
+                try:
+                    result[key] = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    result[key] = value
 
-        return result
+            return result
+        except Exception:
+            return {}
 
     # ============ Работа со списками ============
 
@@ -175,40 +223,55 @@ class RedisClient:
         """Добавление в начало списка"""
         if not self._connected:
             await self.connect()
+        if not self._connected:
+            return 0
 
-        encoded_values = []
-        for value in values:
-            if not isinstance(value, (str, bytes)):
-                value = json.dumps(value)
-            if isinstance(value, str):
-                value = value.encode('utf-8')
-            encoded_values.append(value)
+        try:
+            encoded_values = []
+            for value in values:
+                if not isinstance(value, (str, bytes)):
+                    value = json.dumps(value, default=str)
+                if isinstance(value, str):
+                    value = value.encode('utf-8')
+                encoded_values.append(value)
 
-        return await self._client.lpush(key, *encoded_values)
+            return await self._client.lpush(key, *encoded_values)
+        except Exception:
+            return 0
 
     async def lrange(self, key: str, start: int = 0, stop: int = -1) -> List[Any]:
         """Получение диапазона из списка"""
         if not self._connected:
             await self.connect()
+        if not self._connected:
+            return []
 
-        values = await self._client.lrange(key, start, stop)
-        result = []
+        try:
+            values = await self._client.lrange(key, start, stop)
+            result = []
 
-        for value in values:
-            if isinstance(value, bytes):
-                value = value.decode('utf-8')
-            try:
-                result.append(json.loads(value))
-            except (json.JSONDecodeError, TypeError):
-                result.append(value)
+            for value in values:
+                if isinstance(value, bytes):
+                    value = value.decode('utf-8')
+                try:
+                    result.append(json.loads(value))
+                except (json.JSONDecodeError, TypeError):
+                    result.append(value)
 
-        return result
+            return result
+        except Exception:
+            return []
 
     async def ltrim(self, key: str, start: int, stop: int) -> bool:
         """Обрезка списка"""
         if not self._connected:
             await self.connect()
-        return await self._client.ltrim(key, start, stop)
+        if not self._connected:
+            return False
+        try:
+            return await self._client.ltrim(key, start, stop)
+        except Exception:
+            return False
 
     # ============ Pub/Sub ============
 
@@ -216,24 +279,34 @@ class RedisClient:
         """Публикация сообщения в канал"""
         if not self._connected:
             await self.connect()
+        if not self._connected:
+            return 0
 
-        if not isinstance(message, (str, bytes)):
-            message = json.dumps(message)
-        if isinstance(message, str):
-            message = message.encode('utf-8')
+        try:
+            if not isinstance(message, (str, bytes)):
+                message = json.dumps(message, default=str)
+            if isinstance(message, str):
+                message = message.encode('utf-8')
 
-        return await self._client.publish(channel, message)
+            return await self._client.publish(channel, message)
+        except Exception:
+            return 0
 
     async def subscribe(self, *channels: str) -> aioredis.client.PubSub:
         """Подписка на каналы"""
         if not self._connected:
             await self.connect()
+        if not self._connected:
+            return None
 
-        if not self._pubsub:
-            self._pubsub = self._client.pubsub()
+        try:
+            if not self._pubsub:
+                self._pubsub = self._client.pubsub()
 
-        await self._pubsub.subscribe(*channels)
-        return self._pubsub
+            await self._pubsub.subscribe(*channels)
+            return self._pubsub
+        except Exception:
+            return None
 
     # ============ Специализированные методы для трейдинга ============
 
@@ -260,11 +333,18 @@ class RedisClient:
             ttl: int = 300
     ) -> bool:
         """Кеширование индикаторов"""
-        key = f"indicators:{symbol}:{timeframe}"
-        for indicator_name, value in indicators.items():
-            await self.hset(key, indicator_name, value)
-        await self._client.expire(key, ttl)
-        return True
+        if not self._connected:
+            return False
+
+        try:
+            key = f"indicators:{symbol}:{timeframe}"
+            for indicator_name, value in indicators.items():
+                await self.hset(key, indicator_name, value)
+            if self._connected and self._client:
+                await self._client.expire(key, ttl)
+            return True
+        except Exception:
+            return False
 
     async def get_indicators(
             self,
@@ -283,16 +363,22 @@ class RedisClient:
             max_length: int = 1000
     ) -> None:
         """Добавление цены в историю"""
-        key = f"prices:{symbol}"
-        ts = timestamp or datetime.utcnow()
+        if not self._connected:
+            return
 
-        data = {
-            "price": price,
-            "timestamp": ts.isoformat()
-        }
+        try:
+            key = f"prices:{symbol}"
+            ts = timestamp or datetime.utcnow()
 
-        await self.lpush(key, data)
-        await self.ltrim(key, 0, max_length - 1)
+            data = {
+                "price": price,
+                "timestamp": ts.isoformat()
+            }
+
+            await self.lpush(key, data)
+            await self.ltrim(key, 0, max_length - 1)
+        except Exception:
+            pass
 
     async def get_price_history(
             self,
@@ -319,28 +405,34 @@ class RedisClient:
 
     async def get_all_positions(self) -> List[Dict[str, Any]]:
         """Получение всех открытых позиций"""
-        pattern = "position:*"
-        positions = []
+        if not self._connected:
+            return []
 
-        cursor = 0
-        while True:
-            cursor, keys = await self._client.scan(
-                cursor,
-                match=pattern,
-                count=100
-            )
+        try:
+            pattern = "position:*"
+            positions = []
 
-            for key in keys:
-                if isinstance(key, bytes):
-                    key = key.decode('utf-8')
-                position = await self.get(key)
-                if position:
-                    positions.append(position)
+            cursor = 0
+            while True:
+                cursor, keys = await self._client.scan(
+                    cursor,
+                    match=pattern,
+                    count=100
+                )
 
-            if cursor == 0:
-                break
+                for key in keys:
+                    if isinstance(key, bytes):
+                        key = key.decode('utf-8')
+                    position = await self.get(key)
+                    if position:
+                        positions.append(position)
 
-        return positions
+                if cursor == 0:
+                    break
+
+            return positions
+        except Exception:
+            return []
 
     # ============ Метрики и статистика ============
 
@@ -348,7 +440,12 @@ class RedisClient:
         """Инкремент счётчика"""
         if not self._connected:
             await self.connect()
-        return await self._client.incrby(key, amount)
+        if not self._connected:
+            return 0
+        try:
+            return await self._client.incrby(key, amount)
+        except Exception:
+            return 0
 
     async def get_counter(self, key: str) -> int:
         """Получение значения счётчика"""
@@ -380,6 +477,14 @@ class CacheManager:
         def decorator(func: Callable) -> Callable:
             @wraps(func)
             async def wrapper(*args, **kwargs):
+                # Если Redis недоступен, просто выполняем функцию
+                if not self.redis._connected:
+                    await self.redis.connect()
+
+                if not self.redis._connected:
+                    # Redis недоступен, выполняем без кеширования
+                    return await func(*args, **kwargs)
+
                 # Построение ключа кеша
                 if key_builder:
                     cache_key = key_builder(*args, **kwargs)
@@ -402,14 +507,15 @@ class CacheManager:
                 # Выполнение функции
                 result = await func(*args, **kwargs)
 
-                # Сохранение в кеш
-                await self.redis.set(cache_key, result, expire=ttl)
-                logger.logger.debug(
-                    "Cache set",
-                    function=func.__name__,
-                    key=cache_key,
-                    ttl=ttl
-                )
+                # Сохранение в кеш (если Redis доступен)
+                if self.redis._connected:
+                    await self.redis.set(cache_key, result, expire=ttl)
+                    logger.logger.debug(
+                        "Cache set",
+                        function=func.__name__,
+                        key=cache_key,
+                        ttl=ttl
+                    )
 
                 return result
 
@@ -422,29 +528,35 @@ class CacheManager:
         if not self.redis._connected:
             await self.redis.connect()
 
-        deleted = 0
-        cursor = 0
+        if not self.redis._connected:
+            return 0
 
-        while True:
-            cursor, keys = await self.redis._client.scan(
-                cursor,
-                match=pattern,
-                count=100
+        try:
+            deleted = 0
+            cursor = 0
+
+            while True:
+                cursor, keys = await self.redis._client.scan(
+                    cursor,
+                    match=pattern,
+                    count=100
+                )
+
+                if keys:
+                    deleted += await self.redis.delete(*keys)
+
+                if cursor == 0:
+                    break
+
+            logger.logger.info(
+                "Cache invalidated",
+                pattern=pattern,
+                deleted_keys=deleted
             )
 
-            if keys:
-                deleted += await self.redis.delete(*keys)
-
-            if cursor == 0:
-                break
-
-        logger.logger.info(
-            "Cache invalidated",
-            pattern=pattern,
-            deleted_keys=deleted
-        )
-
-        return deleted
+            return deleted
+        except Exception:
+            return 0
 
 
 # Создание глобальных экземпляров
@@ -455,8 +567,8 @@ cache_manager = CacheManager(redis_client)
 # Вспомогательные функции
 async def init_redis(url: str = None):
     """Инициализация Redis соединения"""
+    global redis_client, cache_manager
     if url:
-        global redis_client, cache_manager
         redis_client = RedisClient(url)
         cache_manager = CacheManager(redis_client)
 

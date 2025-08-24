@@ -1,5 +1,4 @@
-﻿# src/bots/advanced_paper_bot.py
-"""
+﻿"""
 Продвинутый Paper Trading Bot с реальными данными Binance и ML стратегиями
 """
 import asyncio
@@ -71,14 +70,14 @@ class AdvancedPaperTradingBot:
             # 3. Инициализация ML моделей
             await self._initialize_ml()
 
-            # 4. Запуск WebSocket стримов
-            await self._start_websocket_streams()
+            # 4. Запуск WebSocket стримов или polling
+            await self._start_data_streams()
 
             logger.logger.info(
-                "Advanced Paper Trading Bot initialized",
-                initial_balance=self.initial_balance,
-                symbols=settings.trading.SYMBOLS,
-                timeframe=settings.trading.PRIMARY_TIMEFRAME
+                f"Advanced Paper Trading Bot initialized | "
+                f"Initial balance: {self.initial_balance} | "
+                f"Symbols: {settings.trading.SYMBOLS[:3]} | "
+                f"Timeframe: {settings.trading.PRIMARY_TIMEFRAME}"
             )
 
         except Exception as e:
@@ -126,19 +125,27 @@ class AdvancedPaperTradingBot:
                     limit=500
                 )
 
-                self.market_data[symbol] = df
-
-                # Сохраняем последние индикаторы
                 if not df.empty:
+                    self.market_data[symbol] = df
+
+                    # Сохраняем последние индикаторы
                     self.indicators[symbol] = {
                         'rsi': df['rsi'].iloc[-1] if 'rsi' in df.columns else 50,
                         'macd': df['macd'].iloc[-1] if 'macd' in df.columns else 0,
                         'bb_position': df['bb_percent'].iloc[-1] if 'bb_percent' in df.columns else 0.5,
                         'volume_ratio': df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 1,
-                        'atr': df['atr'].iloc[-1] if 'atr' in df.columns else 0
+                        'atr': df['atr'].iloc[-1] if 'atr' in df.columns else 0,
+                        'price': df['close'].iloc[-1] if 'close' in df.columns else 0
                     }
 
-                logger.logger.info(f"Loaded {len(df)} candles for {symbol}")
+                    # Исправленное логирование
+                    logger.logger.info(
+                        f"Loaded {len(df)} candles for {symbol} | "
+                        f"Price: {self.indicators[symbol]['price']:.2f} | "
+                        f"RSI: {self.indicators[symbol]['rsi']:.1f}"
+                    )
+                else:
+                    logger.logger.warning(f"No data loaded for {symbol}")
 
             except Exception as e:
                 logger.logger.warning(f"Failed to load data for {symbol}: {e}")
@@ -151,6 +158,15 @@ class AdvancedPaperTradingBot:
             logger.logger.info("ML models loaded from disk")
         except:
             logger.logger.info("No saved models found, will train on first suitable data")
+
+    async def _start_data_streams(self):
+        """Запуск потоков данных (WebSocket или REST API polling)"""
+        # Для testnet используем REST API polling вместо WebSocket
+        if settings.api.TESTNET:
+            logger.logger.warning("Using REST API polling for testnet (WebSocket issues)")
+            asyncio.create_task(self._poll_market_data())
+        else:
+            await self._start_websocket_streams()
 
     async def _start_websocket_streams(self):
         """Запуск WebSocket стримов для реальных данных"""
@@ -179,26 +195,107 @@ class AdvancedPaperTradingBot:
 
         except Exception as e:
             logger.logger.error(f"Failed to start websocket streams: {e}")
+            # Fallback на REST API
+            asyncio.create_task(self._poll_market_data())
+
+    async def _poll_market_data(self):
+        """Альтернативный метод обновления данных через REST API"""
+        logger.logger.info("Starting REST API polling for market data")
+
+        poll_interval = 30  # секунд
+        last_update = {}
+
+        while self.running:
+            try:
+                for symbol in settings.trading.SYMBOLS[:3]:
+                    try:
+                        # Проверяем, нужно ли обновление
+                        now = datetime.utcnow()
+                        if symbol in last_update:
+                            time_since_update = (now - last_update[symbol]).total_seconds()
+                            if time_since_update < poll_interval:
+                                continue
+
+                        # Получаем текущую цену
+                        ticker = await self.binance_client.get_ticker(symbol=symbol)
+                        price = float(ticker['lastPrice'])
+
+                        # Проверяем изменение цены
+                        old_price = self.indicators.get(symbol, {}).get('price', 0)
+                        if old_price > 0:
+                            price_change = abs((price - old_price) / old_price)
+                        else:
+                            price_change = 1
+
+                        # Обновляем данные если цена изменилась более чем на 0.1% или прошло достаточно времени
+                        if price_change > 0.001 or symbol not in last_update:
+                            # Загружаем свежие данные
+                            df = await self.data_collector.fetch_historical_data(
+                                symbol=symbol,
+                                interval=settings.trading.PRIMARY_TIMEFRAME,
+                                days_back=1,
+                                limit=100
+                            )
+
+                            if not df.empty:
+                                self.market_data[symbol] = df
+
+                                # Обновляем индикаторы
+                                self.indicators[symbol] = {
+                                    'rsi': df['rsi'].iloc[-1] if 'rsi' in df.columns else 50,
+                                    'macd': df['macd'].iloc[-1] if 'macd' in df.columns else 0,
+                                    'bb_position': df['bb_percent'].iloc[-1] if 'bb_percent' in df.columns else 0.5,
+                                    'volume_ratio': df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 1,
+                                    'atr': df['atr'].iloc[-1] if 'atr' in df.columns else 0,
+                                    'price': price
+                                }
+
+                                last_update[symbol] = now
+
+                                logger.logger.debug(
+                                    f"Updated {symbol} via REST API | "
+                                    f"Price: {price:.2f} | "
+                                    f"RSI: {self.indicators[symbol]['rsi']:.1f} | "
+                                    f"BB: {self.indicators[symbol]['bb_position']:.2f}"
+                                )
+
+                    except Exception as e:
+                        logger.logger.error(f"Failed to poll data for {symbol}: {e}")
+
+                # Ждём перед следующей итерацией
+                await asyncio.sleep(5)  # Проверяем каждые 5 секунд, но обновляем реже
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.logger.error(f"Error in polling loop: {e}")
+                await asyncio.sleep(10)
 
     async def _handle_kline_update(self, data: Dict):
         """Обработка обновлений свечей"""
-        kline = data.get('k', {})
-        if kline.get('x'):  # Свеча закрылась
-            symbol = kline.get('s')
-            logger.logger.debug(f"Closed candle for {symbol}: {kline.get('c')}")
+        try:
+            kline = data.get('k', {})
+            if kline.get('x'):  # Свеча закрылась
+                symbol = kline.get('s')
+                logger.logger.debug(f"Closed candle for {symbol}: {kline.get('c')}")
 
-            # Обновляем рыночные данные
-            await self._update_market_data(symbol)
+                # Обновляем рыночные данные
+                await self._update_market_data(symbol)
+        except Exception as e:
+            logger.logger.error(f"Error handling kline update: {e}")
 
     async def _handle_ticker_update(self, data: Dict):
         """Обработка обновлений тикера"""
-        symbol = data.get('s')
-        price = float(data.get('c', 0))
+        try:
+            symbol = data.get('s')
+            price = float(data.get('c', 0))
 
-        if symbol and price > 0:
-            # Обновляем текущие цены для позиций
-            if symbol in self.positions:
-                await self._update_position_pnl(symbol, price)
+            if symbol and price > 0:
+                # Обновляем текущие цены для позиций
+                if symbol in self.positions:
+                    await self._update_position_pnl(symbol, price)
+        except Exception as e:
+            logger.logger.error(f"Error handling ticker update: {e}")
 
     async def _update_market_data(self, symbol: str):
         """Обновление рыночных данных и индикаторов"""
@@ -268,33 +365,43 @@ class AdvancedPaperTradingBot:
             try:
                 # Пропускаем если нет данных
                 if symbol not in self.market_data:
+                    logger.logger.debug(f"No market data for {symbol}")
                     continue
 
                 df = self.market_data[symbol]
                 if df.empty or len(df) < 50:
+                    logger.logger.debug(f"Insufficient data for {symbol}: {len(df)} candles")
                     continue
 
                 # Получаем текущие индикаторы
                 indicators = self.indicators.get(symbol, {})
-                current_price = indicators.get('price', df['close'].iloc[-1])
+                current_price = indicators.get('price', df['close'].iloc[-1] if not df.empty else 0)
+
+                if current_price == 0:
+                    logger.logger.warning(f"Zero price for {symbol}, skipping")
+                    continue
 
                 # Генерируем торговые сигналы
                 signal = await self._generate_trading_signal(symbol, df, indicators)
 
                 if signal['action'] != 'HOLD':
                     logger.logger.info(
-                        f"Signal generated for {symbol}",
-                        action=signal['action'],
-                        confidence=signal['confidence'],
-                        reasons=signal['reasons']
+                        f"Signal generated for {symbol} | "
+                        f"Action: {signal['action']} | "
+                        f"Confidence: {signal['confidence']:.2f} | "
+                        f"Reasons: {', '.join(signal['reasons'])}"
                     )
 
-                    # Выполняем сделку если сигнал достаточно сильный
-                    if signal['confidence'] >= 0.65:
+                    # Проверяем уверенность сигнала
+                    if signal['confidence'] >= 0.55:  # Снижен порог для большей активности
                         await self._execute_trade(symbol, signal, current_price)
+                    else:
+                        logger.logger.debug(
+                            f"Signal confidence too low for {symbol}: {signal['confidence']:.2f}"
+                        )
 
             except Exception as e:
-                logger.logger.error(f"Analysis failed for {symbol}: {e}")
+                logger.logger.error(f"Analysis failed for {symbol}: {e}", exc_info=True)
 
     async def _generate_trading_signal(self, symbol: str, df: pd.DataFrame, indicators: Dict) -> Dict:
         """Генерация торгового сигнала на основе множественных стратегий"""
@@ -308,76 +415,103 @@ class AdvancedPaperTradingBot:
 
         buy_signals = 0
         sell_signals = 0
-        total_weight = 0
 
         # 1. RSI стратегия
         rsi = indicators.get('rsi', 50)
-        if rsi < settings.signals.RSI_OVERSOLD:
-            buy_signals += 1
+        if rsi < 35:  # Oversold
+            buy_signals += 1.2
             signal['reasons'].append(f"RSI oversold ({rsi:.1f})")
-        elif rsi > settings.signals.RSI_OVERBOUGHT:
-            sell_signals += 1
+        elif rsi > 65:  # Overbought
+            sell_signals += 1.2
             signal['reasons'].append(f"RSI overbought ({rsi:.1f})")
+        elif rsi < 45:  # Mild oversold
+            buy_signals += 0.5
+            signal['reasons'].append(f"RSI low ({rsi:.1f})")
+        elif rsi > 55:  # Mild overbought
+            sell_signals += 0.5
+            signal['reasons'].append(f"RSI high ({rsi:.1f})")
 
         # 2. MACD стратегия
         macd = indicators.get('macd', 0)
-        macd_signal = df['macd_signal'].iloc[-1] if 'macd_signal' in df.columns else 0
-        if macd > macd_signal and macd < 0:
-            buy_signals += 1
-            signal['reasons'].append("MACD bullish crossover")
-        elif macd < macd_signal and macd > 0:
-            sell_signals += 1
-            signal['reasons'].append("MACD bearish crossover")
+        if 'macd_signal' in df.columns and len(df) > 0:
+            macd_signal_val = df['macd_signal'].iloc[-1]
+            macd_diff = macd - macd_signal_val
+
+            if macd_diff > 0:
+                buy_signals += 0.8
+                signal['reasons'].append(f"MACD bullish ({macd_diff:.4f})")
+            elif macd_diff < 0:
+                sell_signals += 0.8
+                signal['reasons'].append(f"MACD bearish ({macd_diff:.4f})")
 
         # 3. Bollinger Bands стратегия
         bb_position = indicators.get('bb_position', 0.5)
-        if bb_position < 0.2:
-            buy_signals += 1
+        if bb_position < 0.2:  # Near lower band
+            buy_signals += 1.0
             signal['reasons'].append(f"Price near lower BB ({bb_position:.2f})")
-        elif bb_position > 0.8:
-            sell_signals += 1
+        elif bb_position > 0.8:  # Near upper band
+            sell_signals += 1.0
             signal['reasons'].append(f"Price near upper BB ({bb_position:.2f})")
+        elif bb_position < 0.35:  # Below middle
+            buy_signals += 0.3
+            signal['reasons'].append(f"Price below BB middle ({bb_position:.2f})")
+        elif bb_position > 0.65:  # Above middle
+            sell_signals += 0.3
+            signal['reasons'].append(f"Price above BB middle ({bb_position:.2f})")
 
         # 4. Volume подтверждение
         volume_ratio = indicators.get('volume_ratio', 1)
-        if volume_ratio > settings.signals.MIN_VOLUME_RATIO:
-            total_weight += 0.2
-            signal['reasons'].append(f"High volume ({volume_ratio:.1f}x)")
+        if volume_ratio > 1.5:  # High volume
+            if buy_signals > sell_signals:
+                buy_signals += 0.5
+                signal['reasons'].append(f"High volume confirmation ({volume_ratio:.1f}x)")
+            elif sell_signals > buy_signals:
+                sell_signals += 0.5
+                signal['reasons'].append(f"High volume confirmation ({volume_ratio:.1f}x)")
 
-        # 5. ML предсказание (если модель обучена)
-        if hasattr(ml_engine, 'xgb_model') and ml_engine.xgb_model is not None:
-            try:
+        # 5. ML предсказание (если доступно)
+        try:
+            if hasattr(ml_engine, 'models_trained') and ml_engine.models_trained:
                 ml_prediction = await ml_engine.predict(df, return_proba=True)
-                if ml_prediction['prediction_label'] == 'UP' and ml_prediction['confidence'] > 0.65:
-                    buy_signals += 2  # ML сигнал имеет больший вес
-                    signal['reasons'].append(f"ML: UP ({ml_prediction['confidence']:.1%})")
-                elif ml_prediction['prediction_label'] == 'DOWN' and ml_prediction['confidence'] > 0.65:
-                    sell_signals += 2
-                    signal['reasons'].append(f"ML: DOWN ({ml_prediction['confidence']:.1%})")
-            except:
-                pass  # Игнорируем ошибки ML
+                if ml_prediction and 'prediction_label' in ml_prediction:
+                    if ml_prediction['prediction_label'] == 'UP' and ml_prediction.get('confidence', 0) > 0.55:
+                        buy_signals += 1.5
+                        signal['reasons'].append(f"ML: UP ({ml_prediction['confidence']:.1%})")
+                    elif ml_prediction['prediction_label'] == 'DOWN' and ml_prediction.get('confidence', 0) > 0.55:
+                        sell_signals += 1.5
+                        signal['reasons'].append(f"ML: DOWN ({ml_prediction['confidence']:.1%})")
+        except Exception as e:
+            logger.logger.debug(f"ML prediction skipped: {e}")
 
         # Определяем финальное действие
-        total_signals = buy_signals + sell_signals
-        if total_signals > 0:
-            if buy_signals > sell_signals and buy_signals >= 2:
-                signal['action'] = 'BUY'
-                signal['confidence'] = buy_signals / 5.0  # Нормализуем к [0, 1]
+        min_signals_required = 1.2  # Минимум сигналов для действия
 
-                # Рассчитываем стоп-лосс и тейк-профит
-                atr = indicators.get('atr', df['close'].iloc[-1] * 0.02)
-                signal['stop_loss'] = df['close'].iloc[-1] - (atr * settings.trading.STOP_LOSS_ATR_MULTIPLIER)
-                signal['take_profit'] = df['close'].iloc[-1] + (
-                            atr * settings.trading.STOP_LOSS_ATR_MULTIPLIER * settings.trading.TAKE_PROFIT_RR_RATIO)
+        if buy_signals >= min_signals_required and buy_signals > sell_signals:
+            signal['action'] = 'BUY'
+            signal['confidence'] = min(buy_signals / 4.0, 0.85)
 
-            elif sell_signals > buy_signals and sell_signals >= 2:
-                signal['action'] = 'SELL'
-                signal['confidence'] = sell_signals / 5.0
+            # Рассчитываем стоп-лосс и тейк-профит
+            atr = indicators.get('atr', df['close'].iloc[-1] * 0.02)
+            signal['stop_loss'] = df['close'].iloc[-1] - (atr * 1.5)
+            signal['take_profit'] = df['close'].iloc[-1] + (atr * 2.5)
 
-                atr = indicators.get('atr', df['close'].iloc[-1] * 0.02)
-                signal['stop_loss'] = df['close'].iloc[-1] + (atr * settings.trading.STOP_LOSS_ATR_MULTIPLIER)
-                signal['take_profit'] = df['close'].iloc[-1] - (
-                            atr * settings.trading.STOP_LOSS_ATR_MULTIPLIER * settings.trading.TAKE_PROFIT_RR_RATIO)
+        elif sell_signals >= min_signals_required and sell_signals > buy_signals:
+            signal['action'] = 'SELL'
+            signal['confidence'] = min(sell_signals / 4.0, 0.85)
+
+            atr = indicators.get('atr', df['close'].iloc[-1] * 0.02)
+            signal['stop_loss'] = df['close'].iloc[-1] + (atr * 1.5)
+            signal['take_profit'] = df['close'].iloc[-1] - (atr * 2.5)
+
+        # Логируем детальную информацию о сигналах
+        if buy_signals > 0 or sell_signals > 0:
+            logger.logger.debug(
+                f"Signal analysis for {symbol} | "
+                f"Buy signals: {buy_signals:.2f} | "
+                f"Sell signals: {sell_signals:.2f} | "
+                f"Action: {signal['action']} | "
+                f"Confidence: {signal['confidence']:.2f}"
+            )
 
         return signal
 
@@ -395,6 +529,10 @@ class AdvancedPaperTradingBot:
                 stop_loss_price=signal['stop_loss'],
                 account_balance=self.current_balance
             )
+
+            if position_size <= 0:
+                logger.logger.warning(f"Invalid position size for {symbol}: {position_size}")
+                return
 
             # Проверяем возможность открытия позиции
             can_open, reason = self.risk_manager.can_open_position(
@@ -446,18 +584,14 @@ class AdvancedPaperTradingBot:
             )
 
             logger.logger.info(
-                f"Position opened",
-                symbol=symbol,
-                side=signal['action'],
-                entry_price=entry_price,
-                size=position_size,
-                stop_loss=signal['stop_loss'],
-                take_profit=signal['take_profit'],
-                reasons=signal['reasons']
+                f"Position opened | Symbol: {symbol} | Side: {signal['action']} | "
+                f"Entry: {entry_price:.2f} | Size: {position_size:.4f} | "
+                f"SL: {signal['stop_loss']:.2f} | TP: {signal['take_profit']:.2f} | "
+                f"Reasons: {', '.join(signal['reasons'])}"
             )
 
         except Exception as e:
-            logger.logger.error(f"Failed to execute trade for {symbol}: {e}")
+            logger.logger.error(f"Failed to execute trade for {symbol}: {e}", exc_info=True)
 
     async def _update_positions(self):
         """Обновление открытых позиций"""
@@ -468,6 +602,9 @@ class AdvancedPaperTradingBot:
                 if not current_price:
                     continue
 
+                # Обновляем P&L позиции
+                await self._update_position_pnl(symbol, current_price)
+
                 # Обновляем позицию в риск-менеджере
                 actions = self.risk_manager.update_position(
                     position_id=position.id,
@@ -476,8 +613,8 @@ class AdvancedPaperTradingBot:
                 )
 
                 # Закрываем позицию если нужно
-                if actions.get('action') == 'close':
-                    await self._close_position(symbol, current_price, actions.get('reason', 'manual'))
+                if actions and actions.get('action') == 'close':
+                    await self._close_position(symbol, current_price, actions.get('reason', 'risk_management'))
 
             except Exception as e:
                 logger.logger.error(f"Failed to update position for {symbol}: {e}")
@@ -500,7 +637,7 @@ class AdvancedPaperTradingBot:
         pnl -= fee
 
         # Обновляем баланс
-        self.current_balance += pnl
+        self.current_balance += (position.quantity * close_price - fee)
 
         # Закрываем в риск-менеджере
         self.risk_manager.close_position(position.id, close_price, reason)
@@ -532,10 +669,9 @@ class AdvancedPaperTradingBot:
         )
 
         logger.logger.info(
-            f"Position closed",
-            symbol=symbol,
-            pnl=pnl,
-            reason=reason
+            f"Position closed | Symbol: {symbol} | "
+            f"PnL: {pnl:.2f} | Reason: {reason} | "
+            f"Close price: {close_price:.2f}"
         )
 
     async def _update_position_pnl(self, symbol: str, current_price: float):
@@ -551,73 +687,94 @@ class AdvancedPaperTradingBot:
 
     async def _check_risk_limits(self):
         """Проверка лимитов риска"""
-        risk_metrics = self.risk_manager.get_risk_metrics()
+        try:
+            risk_metrics = self.risk_manager.get_risk_metrics()
 
-        # Экстренное закрытие при критическом риске
-        if risk_metrics.risk_level.value == "critical":
-            logger.logger.warning("CRITICAL RISK LEVEL - closing all positions")
-            for symbol in list(self.positions.keys()):
-                current_price = self.indicators.get(symbol, {}).get('price', self.positions[symbol].entry_price)
-                await self._close_position(symbol, current_price, "risk_limit")
+            # Экстренное закрытие при критическом риске
+            if risk_metrics.risk_level.value == "critical":
+                logger.logger.warning("CRITICAL RISK LEVEL - closing all positions")
+                for symbol in list(self.positions.keys()):
+                    current_price = self.indicators.get(symbol, {}).get('price', self.positions[symbol].entry_price)
+                    await self._close_position(symbol, current_price, "risk_limit_exceeded")
+        except Exception as e:
+            logger.logger.error(f"Error checking risk limits: {e}")
 
     async def _log_status(self):
         """Логирование статуса бота"""
-        total_pnl = sum(pos.unrealized_pnl for pos in self.positions.values())
-
-        status = {
-            "balance": self.current_balance,
-            "positions": len(self.positions),
-            "trades": len(self.trade_history),
-            "realized_pnl": self.current_balance - self.initial_balance,
-            "unrealized_pnl": total_pnl,
-            "total_pnl": (self.current_balance - self.initial_balance) + total_pnl,
-            "return_percent": ((self.current_balance + total_pnl - self.initial_balance) / self.initial_balance) * 100
-        }
-
-        logger.logger.info("Advanced Bot Status", **status)
-
-        # Логируем открытые позиции
-        for symbol, position in self.positions.items():
-            logger.logger.info(
-                f"Position: {symbol}",
-                side=position.side,
-                entry=position.entry_price,
-                current=position.current_price,
-                pnl=position.unrealized_pnl,
-                pnl_percent=(position.unrealized_pnl / (position.entry_price * position.quantity)) * 100
+        try:
+            total_pnl = sum(
+                getattr(pos, 'unrealized_pnl', 0)
+                for pos in self.positions.values()
             )
+
+            status = {
+                "balance": round(self.current_balance, 2),
+                "positions": len(self.positions),
+                "trades": len(self.trade_history),
+                "realized_pnl": round(self.current_balance - self.initial_balance, 2),
+                "unrealized_pnl": round(total_pnl, 2),
+                "total_pnl": round((self.current_balance - self.initial_balance) + total_pnl, 2),
+                "return_percent": round(
+                    ((self.current_balance + total_pnl - self.initial_balance) / self.initial_balance) * 100,
+                    2
+                )
+            }
+
+            logger.logger.info(
+                f"Advanced Bot Status | Balance: ${status['balance']:.2f} | "
+                f"Positions: {status['positions']} | Trades: {status['trades']} | "
+                f"Realized PnL: ${status['realized_pnl']:.2f} | "
+                f"Unrealized PnL: ${status['unrealized_pnl']:.2f} | "
+                f"Total PnL: ${status['total_pnl']:.2f} | "
+                f"Return: {status['return_percent']:.2f}%"
+            )
+
+            # Логируем открытые позиции
+            for symbol, position in self.positions.items():
+                if hasattr(position, 'unrealized_pnl') and hasattr(position, 'current_price'):
+                    pnl_percent = (position.unrealized_pnl / (position.entry_price * position.quantity)) * 100
+                    logger.logger.info(
+                        f"Position: {symbol} | Side: {position.side} | "
+                        f"Entry: {position.entry_price:.2f} | Current: {position.current_price:.2f} | "
+                        f"PnL: ${position.unrealized_pnl:.2f} ({pnl_percent:.2f}%)"
+                    )
+        except Exception as e:
+            logger.logger.error(f"Error logging status: {e}")
 
     async def stop(self):
         """Остановка бота"""
         logger.logger.info("Stopping Advanced Paper Trading Bot")
         self.running = False
 
-        # Закрываем все позиции
-        for symbol in list(self.positions.keys()):
-            current_price = self.indicators.get(symbol, {}).get('price', self.positions[symbol].entry_price)
-            await self._close_position(symbol, current_price, "bot_stopped")
+        try:
+            # Закрываем все позиции
+            for symbol in list(self.positions.keys()):
+                current_price = self.indicators.get(symbol, {}).get('price', self.positions[symbol].entry_price)
+                await self._close_position(symbol, current_price, "bot_stopped")
 
-        # Отключаемся от Binance
-        if self.binance_client:
-            await self.binance_client.close_connection()
+            # Отключаемся от Binance
+            if self.binance_client:
+                await self.binance_client.close_connection()
 
-        # Останавливаем WebSocket
-        await ws_client.stop()
+            # Останавливаем WebSocket
+            await ws_client.stop()
 
-        # Финальный отчёт
-        final_pnl = self.current_balance - self.initial_balance
-        final_return = (final_pnl / self.initial_balance) * 100
+            # Финальный отчёт
+            final_pnl = self.current_balance - self.initial_balance
+            final_return = (final_pnl / self.initial_balance) * 100
 
-        win_trades = [t for t in self.trade_history if t['pnl'] > 0]
-        lose_trades = [t for t in self.trade_history if t['pnl'] < 0]
+            win_trades = [t for t in self.trade_history if t['pnl'] > 0]
+            lose_trades = [t for t in self.trade_history if t['pnl'] < 0]
 
-        logger.logger.info(
-            "Final Report",
-            final_balance=self.current_balance,
-            total_pnl=final_pnl,
-            total_return_percent=final_return,
-            total_trades=len(self.trade_history),
-            winning_trades=len(win_trades),
-            losing_trades=len(lose_trades),
-            win_rate=len(win_trades) / len(self.trade_history) * 100 if self.trade_history else 0
-        )
+            logger.logger.info(
+                f"Final Report | "
+                f"Final Balance: ${self.current_balance:.2f} | "
+                f"Total PnL: ${final_pnl:.2f} | "
+                f"Return: {final_return:.2f}% | "
+                f"Total Trades: {len(self.trade_history)} | "
+                f"Wins: {len(win_trades)} | "
+                f"Losses: {len(lose_trades)} | "
+                f"Win Rate: {len(win_trades) / len(self.trade_history) * 100:.2f}%" if self.trade_history else "No trades executed"
+            )
+        except Exception as e:
+            logger.logger.error(f"Error stopping bot: {e}")
