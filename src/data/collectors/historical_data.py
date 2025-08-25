@@ -2,14 +2,14 @@
 """
 Сборщик исторических данных с Binance с поддержкой
 мультитаймфреймов и расчётом индикаторов
-ИСПРАВЛЕНО: Добавлен параметр force_refresh для обхода кеша
+ИСПРАВЛЕНО: fillna deprecation и временные метки
 """
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from binance import AsyncClient
-import pandas_ta as ta  # Используем pandas_ta вместо talib
+import pandas_ta as ta
 from src.monitoring.logger import logger
 from src.data.storage.redis_client import redis_client
 from src.config.settings import settings
@@ -49,7 +49,7 @@ class HistoricalDataCollector:
     def __init__(self):
         self.client: Optional[AsyncClient] = None
         self.symbol_info_cache: Dict[str, Dict] = {}
-        self.force_refresh = False  # Флаг для принудительного обновления
+        self.force_refresh = False
 
     async def initialize(self, client: AsyncClient):
         """Инициализация с клиентом Binance"""
@@ -96,7 +96,7 @@ class HistoricalDataCollector:
             interval: str,
             days_back: int = 2,
             limit: int = 1000,
-            force_refresh: bool = None  # НОВОЕ: параметр для принудительного обновления
+            force_refresh: bool = None
     ) -> pd.DataFrame:
         """
         Получение исторических данных
@@ -125,7 +125,7 @@ class HistoricalDataCollector:
                     # Проверяем актуальность кешированных данных
                     if 'cache_time' in cached_data:
                         cache_time = datetime.fromisoformat(cached_data['cache_time'])
-                        age_seconds = (datetime.utcnow() - cache_time).total_seconds()
+                        age_seconds = (datetime.now(timezone.utc).replace(tzinfo=None) - cache_time).total_seconds()
 
                         # Если данные старше 30 секунд, обновляем
                         if age_seconds > 30:
@@ -151,7 +151,7 @@ class HistoricalDataCollector:
             logger.logger.debug(f"Fetching fresh data for {symbol} {interval}")
 
             # Расчёт временных меток
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc).replace(tzinfo=None)
             start_time = end_time - timedelta(days=days_back)
 
             # Получение данных с Binance
@@ -210,7 +210,7 @@ class HistoricalDataCollector:
                     # Подготавливаем данные для кеширования
                     cache_data = {
                         'data': df.reset_index().to_dict('records'),
-                        'cache_time': datetime.utcnow().isoformat()
+                        'cache_time': datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
                     }
 
                     # Сохраняем с коротким TTL (60 секунд)
@@ -319,9 +319,9 @@ class HistoricalDataCollector:
             # ROC
             df["roc"] = ta.roc(df["close"], length=10)
 
-            # Заполняем пропущенные значения
+            # Заполняем пропущенные значения - ИСПРАВЛЕНО
             df.bfill(inplace=True)
-            df.fillna(method='ffill', inplace=True)
+            df.ffill(inplace=True)  # Используем ffill вместо fillna(method='ffill')
 
         except Exception as e:
             logger.logger.error(f"Failed to calculate indicators: {e}")
@@ -380,7 +380,7 @@ class HistoricalDataCollector:
             symbol: str,
             timeframes: List[str] = None,
             days_back: int = 2,
-            force_refresh: bool = True  # НОВОЕ: По умолчанию принудительное обновление
+            force_refresh: bool = True
     ) -> Dict[str, pd.DataFrame]:
         """
         Получение данных для нескольких таймфреймов
@@ -405,7 +405,7 @@ class HistoricalDataCollector:
                     symbol,
                     tf,
                     days_back,
-                    force_refresh=force_refresh  # Передаём флаг обновления
+                    force_refresh=force_refresh
                 )
                 if not df.empty:
                     data[tf] = df
@@ -423,7 +423,7 @@ class HistoricalDataCollector:
                 interval,
                 days_back=1,
                 limit=2,
-                force_refresh=True  # Всегда обновляем
+                force_refresh=True
             )
             if not df.empty:
                 latest = df.iloc[-1]
