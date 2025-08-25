@@ -2,6 +2,7 @@
 """
 Сборщик исторических данных с Binance с поддержкой
 мультитаймфреймов и расчётом индикаторов
+ИСПРАВЛЕНО: Добавлен параметр force_refresh для обхода кеша
 """
 import pandas as pd
 import numpy as np
@@ -48,7 +49,7 @@ class HistoricalDataCollector:
     def __init__(self):
         self.client: Optional[AsyncClient] = None
         self.symbol_info_cache: Dict[str, Dict] = {}
-        self.force_refresh = False  # Добавляем атрибут для совместимости с кешем
+        self.force_refresh = False  # Флаг для принудительного обновления
 
     async def initialize(self, client: AsyncClient):
         """Инициализация с клиентом Binance"""
@@ -94,7 +95,8 @@ class HistoricalDataCollector:
             symbol: str,
             interval: str,
             days_back: int = 2,
-            limit: int = 1000
+            limit: int = 1000,
+            force_refresh: bool = None  # НОВОЕ: параметр для принудительного обновления
     ) -> pd.DataFrame:
         """
         Получение исторических данных
@@ -104,24 +106,50 @@ class HistoricalDataCollector:
             interval: Интервал свечей (1m, 5m, 15m, 1h, 4h, 1d)
             days_back: Количество дней назад
             limit: Максимальное количество свечей
+            force_refresh: Принудительное обновление, игнорируя кеш
 
         Returns:
             DataFrame с OHLCV данными и индикаторами
         """
-        # Проверяем кеш
+        # Определяем нужно ли обновить данные
+        should_refresh = force_refresh if force_refresh is not None else self.force_refresh
+
+        # Ключ кеша
         cache_key = f"historical:{symbol}:{interval}:{days_back}"
 
-        # Пытаемся получить из кеша
-        if not self.force_refresh:
-            cached_data = await redis_client.get(cache_key)
-            if cached_data and isinstance(cached_data, dict):
-                logger.logger.debug(f"Using cached data for {symbol}")
-                try:
-                    return pd.DataFrame(cached_data)
-                except:
-                    pass  # Если не получилось восстановить из кеша, загружаем заново
+        # Проверяем кеш ТОЛЬКО если не требуется принудительное обновление
+        if not should_refresh:
+            try:
+                cached_data = await redis_client.get(cache_key)
+                if cached_data and isinstance(cached_data, dict):
+                    # Проверяем актуальность кешированных данных
+                    if 'cache_time' in cached_data:
+                        cache_time = datetime.fromisoformat(cached_data['cache_time'])
+                        age_seconds = (datetime.utcnow() - cache_time).total_seconds()
 
+                        # Если данные старше 30 секунд, обновляем
+                        if age_seconds > 30:
+                            logger.logger.debug(f"Cache expired for {symbol} (age: {age_seconds:.0f}s)")
+                            should_refresh = True
+                        else:
+                            logger.logger.debug(f"Using cached data for {symbol} (age: {age_seconds:.0f}s)")
+                            try:
+                                df = pd.DataFrame(cached_data['data'])
+                                if 'open_time' in df.columns:
+                                    df['open_time'] = pd.to_datetime(df['open_time'])
+                                    df.set_index('open_time', inplace=True)
+                                return df
+                            except Exception as e:
+                                logger.logger.warning(f"Failed to restore from cache: {e}")
+                                should_refresh = True
+            except Exception as e:
+                logger.logger.debug(f"Cache check failed: {e}")
+                should_refresh = True
+
+        # Если нужно обновить или нет кеша, загружаем свежие данные
         try:
+            logger.logger.debug(f"Fetching fresh data for {symbol} {interval}")
+
             # Расчёт временных меток
             end_time = datetime.utcnow()
             start_time = end_time - timedelta(days=days_back)
@@ -160,6 +188,10 @@ class HistoricalDataCollector:
             # Временные метки
             df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
             df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+
+            # Сохраняем индекс для восстановления из кеша
+            df_for_cache = df.copy()
+
             df.set_index("open_time", inplace=True)
 
             # Добавление индикаторов
@@ -168,18 +200,28 @@ class HistoricalDataCollector:
             # Добавление рыночной микроструктуры
             self._add_market_microstructure(df)
 
-            # ИСПРАВЛЕНО: правильное логирование без именованных параметров
             logger.logger.debug(
                 f"Fetched {len(df)} candles for {symbol} {interval}"
             )
 
-            # Кешируем результат
-            await redis_client.set(cache_key, df.to_dict(), expire=300)
+            # Кешируем результат с timestamp
+            if redis_client._connected:
+                try:
+                    # Подготавливаем данные для кеширования
+                    cache_data = {
+                        'data': df.reset_index().to_dict('records'),
+                        'cache_time': datetime.utcnow().isoformat()
+                    }
+
+                    # Сохраняем с коротким TTL (60 секунд)
+                    await redis_client.set(cache_key, cache_data, expire=60)
+                    logger.logger.debug(f"Cached data for {symbol} with 60s TTL")
+                except Exception as e:
+                    logger.logger.debug(f"Failed to cache data: {e}")
 
             return df
 
         except Exception as e:
-            # ИСПРАВЛЕНО: правильное логирование ошибки
             logger.logger.error(
                 f"Failed to fetch historical data for {symbol}: {e}"
             )
@@ -337,7 +379,8 @@ class HistoricalDataCollector:
             self,
             symbol: str,
             timeframes: List[str] = None,
-            days_back: int = 2
+            days_back: int = 2,
+            force_refresh: bool = True  # НОВОЕ: По умолчанию принудительное обновление
     ) -> Dict[str, pd.DataFrame]:
         """
         Получение данных для нескольких таймфреймов
@@ -346,6 +389,7 @@ class HistoricalDataCollector:
             symbol: Торговая пара
             timeframes: Список таймфреймов (по умолчанию из настроек)
             days_back: Количество дней назад
+            force_refresh: Принудительное обновление данных
 
         Returns:
             Словарь {timeframe: DataFrame}
@@ -357,7 +401,12 @@ class HistoricalDataCollector:
 
         for tf in timeframes:
             try:
-                df = await self.fetch_historical_data(symbol, tf, days_back)
+                df = await self.fetch_historical_data(
+                    symbol,
+                    tf,
+                    days_back,
+                    force_refresh=force_refresh  # Передаём флаг обновления
+                )
                 if not df.empty:
                     data[tf] = df
             except Exception as e:
@@ -366,9 +415,16 @@ class HistoricalDataCollector:
         return data
 
     async def get_latest_candle(self, symbol: str, interval: str) -> Optional[Dict]:
-        """Получение последней свечи"""
+        """Получение последней свечи (всегда свежие данные)"""
         try:
-            df = await self.fetch_historical_data(symbol, interval, days_back=1, limit=2)
+            # Всегда получаем свежие данные для последней свечи
+            df = await self.fetch_historical_data(
+                symbol,
+                interval,
+                days_back=1,
+                limit=2,
+                force_refresh=True  # Всегда обновляем
+            )
             if not df.empty:
                 latest = df.iloc[-1]
                 return {

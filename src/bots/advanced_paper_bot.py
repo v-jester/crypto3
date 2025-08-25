@@ -1,5 +1,6 @@
 ﻿"""
 Продвинутый Paper Trading Bot с реальными данными Binance и ML стратегиями
+ИСПРАВЛЕНО: Проблема с застрявшими данными
 """
 import asyncio
 import pandas as pd
@@ -51,6 +52,10 @@ class AdvancedPaperTradingBot:
         self.trade_history = []
         self.market_data = {}
         self.indicators = {}
+
+        # НОВОЕ: Добавляем timestamp последнего обновления
+        self.last_data_update = {}
+        self.data_update_interval = 30  # секунд
 
         # Флаги состояния
         self.running = False
@@ -104,6 +109,9 @@ class AdvancedPaperTradingBot:
             # Инициализируем data collector с клиентом
             await self.data_collector.initialize(self.binance_client)
 
+            # ВАЖНО: Устанавливаем флаг принудительного обновления
+            self.data_collector.force_refresh = True
+
             self.connected = True
 
         except Exception as e:
@@ -117,16 +125,20 @@ class AdvancedPaperTradingBot:
 
         for symbol in settings.trading.SYMBOLS[:3]:  # Начнём с первых 3 символов
             try:
+                # ИСПРАВЛЕНО: Принудительно обновляем данные
+                self.data_collector.force_refresh = True
+
                 # Загружаем данные для основного таймфрейма
                 df = await self.data_collector.fetch_historical_data(
                     symbol=symbol,
                     interval=settings.trading.PRIMARY_TIMEFRAME,
-                    days_back=7,
-                    limit=500
+                    days_back=1,  # Уменьшаем до 1 дня для свежих данных
+                    limit=100
                 )
 
                 if not df.empty:
                     self.market_data[symbol] = df
+                    self.last_data_update[symbol] = datetime.utcnow()
 
                     # Сохраняем последние индикаторы
                     self.indicators[symbol] = {
@@ -138,7 +150,6 @@ class AdvancedPaperTradingBot:
                         'price': df['close'].iloc[-1] if 'close' in df.columns else 0
                     }
 
-                    # Исправленное логирование
                     logger.logger.info(
                         f"Loaded {len(df)} candles for {symbol} | "
                         f"Price: {self.indicators[symbol]['price']:.2f} | "
@@ -164,6 +175,8 @@ class AdvancedPaperTradingBot:
         # Для testnet используем REST API polling вместо WebSocket
         if settings.api.TESTNET:
             logger.logger.warning("Using REST API polling for testnet (WebSocket issues)")
+            # ВАЖНО: Устанавливаем флаг running ДО запуска polling
+            self.running = True  # ДОБАВЬТЕ ЭТУ СТРОКУ!
             asyncio.create_task(self._poll_market_data())
         else:
             await self._start_websocket_streams()
@@ -202,68 +215,67 @@ class AdvancedPaperTradingBot:
         """Альтернативный метод обновления данных через REST API"""
         logger.logger.info("Starting REST API polling for market data")
 
-        poll_interval = 30  # секунд
-        last_update = {}
+        poll_interval = 30  # секунд между обновлениями данных
 
         while self.running:
             try:
                 for symbol in settings.trading.SYMBOLS[:3]:
                     try:
-                        # Проверяем, нужно ли обновление
                         now = datetime.utcnow()
-                        if symbol in last_update:
-                            time_since_update = (now - last_update[symbol]).total_seconds()
-                            if time_since_update < poll_interval:
-                                continue
+
+                        # ИСПРАВЛЕНИЕ: Убираем проверку last_update - ВСЕГДА обновляем
+                        logger.logger.debug(f"Updating data for {symbol}")
 
                         # Получаем текущую цену
                         ticker = await self.binance_client.get_ticker(symbol=symbol)
-                        price = float(ticker['lastPrice'])
+                        current_price = float(ticker['lastPrice'])
 
-                        # Проверяем изменение цены
-                        old_price = self.indicators.get(symbol, {}).get('price', 0)
-                        if old_price > 0:
-                            price_change = abs((price - old_price) / old_price)
-                        else:
-                            price_change = 1
+                        # ПРИНУДИТЕЛЬНО обновляем данные
+                        self.data_collector.force_refresh = True
 
-                        # Обновляем данные если цена изменилась более чем на 0.1% или прошло достаточно времени
-                        if price_change > 0.001 or symbol not in last_update:
-                            # Загружаем свежие данные
-                            df = await self.data_collector.fetch_historical_data(
-                                symbol=symbol,
-                                interval=settings.trading.PRIMARY_TIMEFRAME,
-                                days_back=1,
-                                limit=100
-                            )
+                        # Очищаем кеш
+                        cache_key = f"historical:{symbol}:{settings.trading.PRIMARY_TIMEFRAME}:1"
+                        await redis_client.delete(cache_key)
 
-                            if not df.empty:
-                                self.market_data[symbol] = df
+                        # Загружаем СВЕЖИЕ данные
+                        df = await self.data_collector.fetch_historical_data(
+                            symbol=symbol,
+                            interval=settings.trading.PRIMARY_TIMEFRAME,
+                            days_back=1,
+                            limit=100
+                        )
 
-                                # Обновляем индикаторы
-                                self.indicators[symbol] = {
-                                    'rsi': df['rsi'].iloc[-1] if 'rsi' in df.columns else 50,
-                                    'macd': df['macd'].iloc[-1] if 'macd' in df.columns else 0,
-                                    'bb_position': df['bb_percent'].iloc[-1] if 'bb_percent' in df.columns else 0.5,
-                                    'volume_ratio': df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 1,
-                                    'atr': df['atr'].iloc[-1] if 'atr' in df.columns else 0,
-                                    'price': price
-                                }
+                        if not df.empty:
+                            # Логируем ТОЛЬКО если данные изменились
+                            old_rsi = self.indicators.get(symbol, {}).get('rsi', 0)
+                            old_price = self.indicators.get(symbol, {}).get('price', 0)
 
-                                last_update[symbol] = now
+                            # Обновляем данные
+                            self.market_data[symbol] = df
+                            self.last_data_update[symbol] = now
 
-                                logger.logger.debug(
-                                    f"Updated {symbol} via REST API | "
-                                    f"Price: {price:.2f} | "
-                                    f"RSI: {self.indicators[symbol]['rsi']:.1f} | "
-                                    f"BB: {self.indicators[symbol]['bb_position']:.2f}"
+                            self.indicators[symbol] = {
+                                'rsi': df['rsi'].iloc[-1] if 'rsi' in df.columns else 50,
+                                'macd': df['macd'].iloc[-1] if 'macd' in df.columns else 0,
+                                'bb_position': df['bb_percent'].iloc[-1] if 'bb_percent' in df.columns else 0.5,
+                                'volume_ratio': df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 1,
+                                'atr': df['atr'].iloc[-1] if 'atr' in df.columns else 0,
+                                'price': current_price
+                            }
+
+                            # Логируем ТОЛЬКО если есть изменения
+                            if abs(old_rsi - self.indicators[symbol]['rsi']) > 0.1:
+                                logger.logger.info(
+                                    f"Data updated for {symbol} | "
+                                    f"Price: {old_price:.2f} → {current_price:.2f} | "
+                                    f"RSI: {old_rsi:.1f} → {self.indicators[symbol]['rsi']:.1f}"
                                 )
 
                     except Exception as e:
                         logger.logger.error(f"Failed to poll data for {symbol}: {e}")
 
-                # Ждём перед следующей итерацией
-                await asyncio.sleep(5)  # Проверяем каждые 5 секунд, но обновляем реже
+                # Ждём 30 секунд перед следующим обновлением
+                await asyncio.sleep(poll_interval)
 
             except asyncio.CancelledError:
                 break
@@ -298,8 +310,15 @@ class AdvancedPaperTradingBot:
             logger.logger.error(f"Error handling ticker update: {e}")
 
     async def _update_market_data(self, symbol: str):
-        """Обновление рыночных данных и индикаторов"""
+        """ИСПРАВЛЕННОЕ обновление рыночных данных и индикаторов"""
         try:
+            # ПРИНУДИТЕЛЬНОЕ обновление
+            self.data_collector.force_refresh = True
+
+            # Очищаем кеш
+            cache_key = f"historical:{symbol}:{settings.trading.PRIMARY_TIMEFRAME}:1"
+            await redis_client.delete(cache_key)
+
             # Получаем свежие данные
             df = await self.data_collector.fetch_historical_data(
                 symbol=symbol,
@@ -310,6 +329,7 @@ class AdvancedPaperTradingBot:
 
             if not df.empty:
                 self.market_data[symbol] = df
+                self.last_data_update[symbol] = datetime.utcnow()
 
                 # Обновляем индикаторы
                 self.indicators[symbol] = {
@@ -573,8 +593,7 @@ class AdvancedPaperTradingBot:
             fee = position_size * entry_price * self.taker_fee
             self.current_balance -= fee
 
-            # Логируем сделку - исправленный вызов
-            # Не используем logger.log_trade с именованными параметрами
+            # Логируем сделку
             logger.logger.info(
                 f"Trade executed | Action: open | Symbol: {symbol} | "
                 f"Side: {signal['action']} | Price: {entry_price:.2f} | "
@@ -595,10 +614,14 @@ class AdvancedPaperTradingBot:
         """Обновление открытых позиций"""
         for symbol, position in list(self.positions.items()):
             try:
-                # Получаем текущую цену
+                # Получаем текущую цену (обновленную!)
                 current_price = self.indicators.get(symbol, {}).get('price')
-                if not current_price:
-                    continue
+
+                # Если нет цены в индикаторах, запрашиваем напрямую
+                if not current_price or current_price == position.current_price:
+                    ticker = await self.binance_client.get_ticker(symbol=symbol)
+                    current_price = float(ticker['lastPrice'])
+                    logger.logger.debug(f"Fetched fresh price for {symbol}: {current_price}")
 
                 # Обновляем P&L позиции
                 await self._update_position_pnl(symbol, current_price)
@@ -655,7 +678,7 @@ class AdvancedPaperTradingBot:
             'timestamp': datetime.utcnow()
         })
 
-        # Логируем закрытие - исправленный вызов
+        # Логируем закрытие
         logger.logger.info(
             f"Trade executed | Action: close | Symbol: {symbol} | "
             f"Side: {position.side} | Price: {close_price:.2f} | "
