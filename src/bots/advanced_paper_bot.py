@@ -452,16 +452,16 @@ class AdvancedPaperTradingBot:
 
         # 1. RSI стратегия
         rsi = indicators.get('rsi', 50)
-        if rsi < 30:  # Oversold
+        if rsi < 35:  # Oversold
             buy_signals += 1.5
             signal['reasons'].append(f"RSI oversold ({rsi:.1f})")
-        elif rsi > 70:  # Overbought
+        elif rsi > 65:  # Overbought
             sell_signals += 1.5
             signal['reasons'].append(f"RSI overbought ({rsi:.1f})")
-        elif rsi < 40:  # Mild oversold
+        elif rsi < 45:  # Mild oversold
             buy_signals += 0.7
             signal['reasons'].append(f"RSI low ({rsi:.1f})")
-        elif rsi > 60:  # Mild overbought
+        elif rsi > 55:  # Mild overbought
             sell_signals += 0.7
             signal['reasons'].append(f"RSI high ({rsi:.1f})")
 
@@ -512,7 +512,7 @@ class AdvancedPaperTradingBot:
             logger.logger.debug(f"ML prediction skipped: {e}")
 
         # Определяем финальное действие
-        min_signals_required = 1.5  # Минимум сигналов для действия
+        min_signals_required = 1.2  # Минимум сигналов для действия
 
         if buy_signals >= min_signals_required and buy_signals > sell_signals:
             signal['action'] = 'BUY'
