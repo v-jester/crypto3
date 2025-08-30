@@ -1,6 +1,6 @@
 ﻿"""
 Продвинутый Paper Trading Bot с реальными данными Binance и ML стратегиями
-ИСПРАВЛЕНО: Проблемы с застрявшими данными и размером позиций
+ИСПРАВЛЕНО: Проблемы с застрявшими данными, размером позиций и расчетом баланса для коротких позиций
 """
 import asyncio
 import pandas as pd
@@ -551,6 +551,7 @@ class AdvancedPaperTradingBot:
                 'BTCUSDT': 10.0,  # Минимум $10 для BTC
                 'ETHUSDT': 10.0,  # Минимум $10 для ETH
                 'BNBUSDT': 10.0,  # Минимум $10 для BNB
+                'SOLUSDT': 10.0,  # Минимум $10 для SOL
                 'default': 10.0
             }
 
@@ -571,6 +572,7 @@ class AdvancedPaperTradingBot:
                 'BTCUSDT': 0.00001,  # 5 знаков после запятой
                 'ETHUSDT': 0.0001,   # 4 знака после запятой
                 'BNBUSDT': 0.001,    # 3 знака после запятой
+                'SOLUSDT': 0.001,    # 3 знака после запятой
                 'default': 0.001
             }
 
@@ -627,10 +629,10 @@ class AdvancedPaperTradingBot:
             self.positions[symbol] = position
             self.risk_manager.add_position(position)
 
-            # Вычитаем из баланса
+            # Вычитаем из баланса стоимость позиции и комиссию
             position_cost = position_size * entry_price
             fee = position_cost * self.taker_fee
-            self.current_balance -= fee
+            self.current_balance -= (position_cost + fee)
 
             # Логируем сделку
             logger.logger.info(
@@ -681,7 +683,7 @@ class AdvancedPaperTradingBot:
                 logger.logger.error(f"Failed to update position for {symbol}: {e}")
 
     async def _close_position(self, symbol: str, close_price: float, reason: str):
-        """Закрытие позиции"""
+        """ИСПРАВЛЕННОЕ закрытие позиции с корректным расчетом баланса"""
         if symbol not in self.positions:
             return
 
@@ -689,16 +691,29 @@ class AdvancedPaperTradingBot:
 
         # Рассчитываем P&L
         if position.side == 'BUY':
+            # Для длинной позиции: прибыль = (цена закрытия - цена входа) * количество
             pnl = (close_price - position.entry_price) * position.quantity
-        else:
+        else:  # SELL
+            # Для короткой позиции: прибыль = (цена входа - цена закрытия) * количество
             pnl = (position.entry_price - close_price) * position.quantity
 
-        # Вычитаем комиссию
+        # Вычитаем комиссию за закрытие
         fee = position.quantity * close_price * self.taker_fee
         pnl -= fee
 
-        # Обновляем баланс
-        self.current_balance += (position.quantity * close_price - fee)
+        # ИСПРАВЛЕНО: Правильное обновление баланса
+        if position.side == 'BUY':
+            # Для длинной позиции: возвращаем выручку от продажи минус комиссия
+            self.current_balance += (position.quantity * close_price - fee)
+        else:  # SELL
+            # Для короткой позиции:
+            # При открытии мы вычли (position_cost + fee) из баланса
+            # При закрытии мы возвращаем изначальную стоимость позиции + прибыль/убыток
+            entry_value = position.quantity * position.entry_price
+
+            # Возвращаем изначальную стоимость позиции + чистую прибыль от шорта
+            # Прибыль уже включает разницу цен и комиссию
+            self.current_balance += entry_value + pnl
 
         # Закрываем в риск-менеджере
         self.risk_manager.close_position(position.id, close_price, reason)
@@ -734,7 +749,7 @@ class AdvancedPaperTradingBot:
 
             if position.side == 'BUY':
                 position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
-            else:
+            else:  # SELL
                 position.unrealized_pnl = (position.entry_price - current_price) * position.quantity
 
     async def _check_risk_limits(self):
@@ -752,28 +767,41 @@ class AdvancedPaperTradingBot:
             logger.logger.error(f"Error checking risk limits: {e}")
 
     async def _log_status(self):
-        """Логирование статуса бота"""
+        """Логирование статуса бота с правильным расчетом equity"""
         try:
-            total_pnl = sum(
+            # Расчет полного капитала (equity)
+            positions_value = sum(
+                pos.quantity * (pos.current_price if pos.current_price > 0 else pos.entry_price)
+                for pos in self.positions.values()
+            )
+
+            total_unrealized_pnl = sum(
                 getattr(pos, 'unrealized_pnl', 0)
                 for pos in self.positions.values()
             )
 
+            # Equity = свободный баланс + стоимость позиций
+            equity = self.current_balance + positions_value
+
+            # Реальный P&L = разница от начального капитала
+            total_pnl = equity - self.initial_balance
+
             status = {
                 "balance": round(self.current_balance, 2),
+                "positions_value": round(positions_value, 2),
+                "equity": round(equity, 2),
                 "positions": len(self.positions),
                 "trades": len(self.trade_history),
-                "realized_pnl": round(self.current_balance - self.initial_balance, 2),
-                "unrealized_pnl": round(total_pnl, 2),
-                "total_pnl": round((self.current_balance - self.initial_balance) + total_pnl, 2),
-                "return_percent": round(
-                    ((self.current_balance + total_pnl - self.initial_balance) / self.initial_balance) * 100,
-                    2
-                )
+                "realized_pnl": round(sum(t.get('pnl', 0) for t in self.trade_history), 2),
+                "unrealized_pnl": round(total_unrealized_pnl, 2),
+                "total_pnl": round(total_pnl, 2),
+                "return_percent": round((total_pnl / self.initial_balance) * 100, 2) if self.initial_balance > 0 else 0
             }
 
             logger.logger.info(
-                f"📈 Bot Status | Balance: ${status['balance']:.2f} | "
+                f"📈 Bot Status | Equity: ${status['equity']:.2f} | "
+                f"Free Balance: ${status['balance']:.2f} | "
+                f"In Positions: ${status['positions_value']:.2f} | "
                 f"Positions: {status['positions']} | Trades: {status['trades']} | "
                 f"Realized PnL: ${status['realized_pnl']:.2f} | "
                 f"Unrealized PnL: ${status['unrealized_pnl']:.2f} | "
@@ -812,22 +840,27 @@ class AdvancedPaperTradingBot:
             # Останавливаем WebSocket
             await ws_client.stop()
 
-            # Финальный отчёт
-            final_pnl = self.current_balance - self.initial_balance
-            final_return = (final_pnl / self.initial_balance) * 100
+            # Финальный отчёт с правильным расчетом
+            final_pnl = sum(t.get('pnl', 0) for t in self.trade_history)
+            final_balance = self.current_balance
+            final_return = ((final_balance - self.initial_balance) / self.initial_balance) * 100
 
             win_trades = [t for t in self.trade_history if t['pnl'] > 0]
             lose_trades = [t for t in self.trade_history if t['pnl'] < 0]
 
-            logger.logger.info(
-                f"📊 Final Report | "
-                f"Final Balance: ${self.current_balance:.2f} | "
-                f"Total PnL: ${final_pnl:.2f} | "
-                f"Return: {final_return:.2f}% | "
-                f"Total Trades: {len(self.trade_history)} | "
-                f"Wins: {len(win_trades)} | "
-                f"Losses: {len(lose_trades)} | "
-                f"Win Rate: {len(win_trades) / len(self.trade_history) * 100:.2f}%" if self.trade_history else "No trades executed"
-            )
+            if self.trade_history:
+                logger.logger.info(
+                    f"📊 Final Report | "
+                    f"Final Balance: ${final_balance:.2f} | "
+                    f"Total PnL: ${final_pnl:.2f} | "
+                    f"Return: {final_return:.2f}% | "
+                    f"Total Trades: {len(self.trade_history)} | "
+                    f"Wins: {len(win_trades)} | "
+                    f"Losses: {len(lose_trades)} | "
+                    f"Win Rate: {len(win_trades) / len(self.trade_history) * 100:.2f}%"
+                )
+            else:
+                logger.logger.info("No trades executed")
+
         except Exception as e:
             logger.logger.error(f"Error stopping bot: {e}")
