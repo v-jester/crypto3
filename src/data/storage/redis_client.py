@@ -1,581 +1,187 @@
-# src/data/storage/redis_client.py
-"""
-Redis клиент с поддержкой кеширования, pub/sub и управлением TTL
-"""
 import json
 import pickle
-import asyncio
-from typing import Any, Dict, List, Optional, Union, Callable
-from datetime import datetime, timedelta
+from typing import Any, Optional, List
+
 import redis.asyncio as aioredis
-from redis.asyncio import ConnectionPool
-from functools import wraps
-import hashlib
-from src.monitoring.logger import logger, log_performance
+
+from src.monitoring.logger import logger
 from src.config.settings import settings
 
 
 class RedisClient:
-    """Асинхронный Redis клиент с расширенным функционалом"""
+    """Асинхронный Redis клиент с безопасными операциями (SCAN/UNLINK)."""
 
-    def __init__(self, url: str = None, max_connections: int = 50):
-        # Используем URL из настроек если не передан явно
-        if url is None:
-            # Правильно формируем URL из настроек
-            redis_port = settings.database.REDIS_PORT
-            redis_host = settings.database.REDIS_HOST
-            redis_db = settings.database.REDIS_DB
-
-            if settings.database.REDIS_PASSWORD:
-                pwd = settings.database.REDIS_PASSWORD.get_secret_value()
-                url = f"redis://:{pwd}@{redis_host}:{redis_port}/{redis_db}"
-            else:
-                url = f"redis://{redis_host}:{redis_port}/{redis_db}"
-
-        self.url = url
-        self.max_connections = max_connections
-        self._pool: Optional[ConnectionPool] = None
-        self._client: Optional[aioredis.Redis] = None
-        self._pubsub: Optional[aioredis.client.PubSub] = None
+    def __init__(self):
+        self._redis: Optional[aioredis.Redis] = None
         self._connected = False
+        self._url: Optional[str] = None
 
-    async def connect(self):
-        """Установка соединения с Redis"""
-        if self._connected:
-            return
-
+    async def connect(self, url: Optional[str] = None):
+        """Подключение к Redis. Можно передать url, иначе берём из settings.database.redis_url."""
         try:
-            self._pool = ConnectionPool.from_url(
-                self.url,
-                max_connections=self.max_connections,
-                decode_responses=False  # Для поддержки бинарных данных
+            if url:
+                self._url = url
+            if not self._url:
+                self._url = settings.database.redis_url
+            self._redis = await aioredis.from_url(
+                self._url,
+                encoding="utf-8",
+                decode_responses=False,
+                max_connections=10,
             )
-            self._client = aioredis.Redis(connection_pool=self._pool)
-
-            # Проверка соединения
-            await self._client.ping()
+            await self._redis.ping()
             self._connected = True
-            logger.logger.info("Redis connected", url=self.url)
-
+            logger.logger.info("Redis connected", url=self._url)
         except Exception as e:
-            logger.logger.error(f"Redis connection failed: {e}")
-            # Не бросаем исключение, работаем без кеша
+            logger.logger.error(f"Failed to connect to Redis: {e}")
             self._connected = False
 
     async def disconnect(self):
-        """Закрытие соединения"""
-        if self._pubsub:
-            await self._pubsub.close()
-        if self._client:
-            await self._client.close()
-        if self._pool:
-            await self._pool.disconnect()
+        if self._redis:
+            await self._redis.close()
         self._connected = False
         logger.logger.info("Redis disconnected")
 
-    # ============ Базовые операции ============
-
-    async def set(self, key: str, value: Any, expire: Optional[int] = None) -> bool:
-        """Установка значения с опциональным TTL"""
+    async def get(self, key: str) -> Optional[Any]:
         if not self._connected:
             await self.connect()
-
         if not self._connected:
-            # Redis недоступен, возвращаем False
-            return False
-
+            return None
         try:
-            # Сериализация значения
-            if isinstance(value, (str, bytes)):
+            data = await self._redis.get(key)
+            if data is None:
+                return None
+            try:
+                return json.loads(data)
+            except Exception:
+                try:
+                    return pickle.loads(data)
+                except Exception:
+                    return data.decode("utf-8") if isinstance(data, bytes) else data
+        except Exception as e:
+            logger.logger.error(f"Failed to get key {key}: {e}")
+            return None
+
+    async def set(self, key: str, value: Any, expire: int | None = None) -> bool:
+        if not self._connected:
+            await self.connect()
+        if not self._connected:
+            return False
+        try:
+            if isinstance(value, (dict, list)):
+                data = json.dumps(value)
+            elif isinstance(value, str):
                 data = value
             else:
-                data = json.dumps(value, default=str)  # default=str для datetime
-
-            if isinstance(data, str):
-                data = data.encode('utf-8')
-
-            result = await self._client.set(key, data, ex=expire)
-            return bool(result)
-
+                data = pickle.dumps(value)
+            if expire:
+                await self._redis.setex(key, expire, data)
+            else:
+                await self._redis.set(key, data)
+            return True
         except Exception as e:
-            logger.logger.debug(f"Redis set error for key {key}: {e}")
+            logger.logger.error(f"Failed to set key {key}: {e}")
             return False
-
-    async def get(self, key: str, default: Any = None) -> Any:
-        """Получение значения"""
-        if not self._connected:
-            await self.connect()
-
-        if not self._connected:
-            # Redis недоступен, возвращаем default
-            return default
-
-        try:
-            value = await self._client.get(key)
-            if value is None:
-                return default
-
-            # Десериализация
-            if isinstance(value, bytes):
-                value = value.decode('utf-8')
-
-            try:
-                return json.loads(value)
-            except (json.JSONDecodeError, TypeError):
-                return value
-
-        except Exception as e:
-            logger.logger.debug(f"Redis get error for key {key}: {e}")
-            return default
 
     async def delete(self, *keys: str) -> int:
-        """Удаление ключей"""
         if not self._connected:
             await self.connect()
         if not self._connected:
             return 0
         try:
-            return await self._client.delete(*keys)
+            return await self._redis.delete(*keys)
         except Exception:
             return 0
 
-    async def exists(self, *keys: str) -> int:
-        """Проверка существования ключей"""
-        if not self._connected:
-            await self.connect()
-        if not self._connected:
-            return 0
-        try:
-            return await self._client.exists(*keys)
-        except Exception:
-            return 0
-
-    # ============ Работа с хешами ============
-
-    async def hset(self, name: str, key: str, value: Any) -> int:
-        """Установка значения в хеш"""
-        if not self._connected:
-            await self.connect()
-        if not self._connected:
-            return 0
-
-        try:
-            if not isinstance(value, (str, bytes)):
-                value = json.dumps(value, default=str)
-            if isinstance(value, str):
-                value = value.encode('utf-8')
-
-            return await self._client.hset(name, key, value)
-        except Exception:
-            return 0
-
-    async def hget(self, name: str, key: str) -> Any:
-        """Получение значения из хеша"""
-        if not self._connected:
-            await self.connect()
-        if not self._connected:
-            return None
-
-        try:
-            value = await self._client.hget(name, key)
-            if value is None:
-                return None
-
-            if isinstance(value, bytes):
-                value = value.decode('utf-8')
-
-            try:
-                return json.loads(value)
-            except (json.JSONDecodeError, TypeError):
-                return value
-        except Exception:
-            return None
-
-    async def hgetall(self, name: str) -> Dict[str, Any]:
-        """Получение всех значений хеша"""
-        if not self._connected:
-            await self.connect()
-        if not self._connected:
-            return {}
-
-        try:
-            data = await self._client.hgetall(name)
-            result = {}
-
-            for key, value in data.items():
-                if isinstance(key, bytes):
-                    key = key.decode('utf-8')
-                if isinstance(value, bytes):
-                    value = value.decode('utf-8')
-
-                try:
-                    result[key] = json.loads(value)
-                except (json.JSONDecodeError, TypeError):
-                    result[key] = value
-
-            return result
-        except Exception:
-            return {}
-
-    # ============ Работа со списками ============
-
-    async def lpush(self, key: str, *values: Any) -> int:
-        """Добавление в начало списка"""
-        if not self._connected:
-            await self.connect()
-        if not self._connected:
-            return 0
-
-        try:
-            encoded_values = []
-            for value in values:
-                if not isinstance(value, (str, bytes)):
-                    value = json.dumps(value, default=str)
-                if isinstance(value, str):
-                    value = value.encode('utf-8')
-                encoded_values.append(value)
-
-            return await self._client.lpush(key, *encoded_values)
-        except Exception:
-            return 0
-
-    async def lrange(self, key: str, start: int = 0, stop: int = -1) -> List[Any]:
-        """Получение диапазона из списка"""
+    async def keys(self, pattern: str, count: int = 500) -> List[str]:
+        """Безопасный аналог KEYS на SCAN."""
         if not self._connected:
             await self.connect()
         if not self._connected:
             return []
-
+        out: List[str] = []
+        cursor = 0
         try:
-            values = await self._client.lrange(key, start, stop)
-            result = []
-
-            for value in values:
-                if isinstance(value, bytes):
-                    value = value.decode('utf-8')
-                try:
-                    result.append(json.loads(value))
-                except (json.JSONDecodeError, TypeError):
-                    result.append(value)
-
-            return result
-        except Exception:
-            return []
-
-    async def ltrim(self, key: str, start: int, stop: int) -> bool:
-        """Обрезка списка"""
-        if not self._connected:
-            await self.connect()
-        if not self._connected:
-            return False
-        try:
-            return await self._client.ltrim(key, start, stop)
-        except Exception:
-            return False
-
-    # ============ Pub/Sub ============
-
-    async def publish(self, channel: str, message: Any) -> int:
-        """Публикация сообщения в канал"""
-        if not self._connected:
-            await self.connect()
-        if not self._connected:
-            return 0
-
-        try:
-            if not isinstance(message, (str, bytes)):
-                message = json.dumps(message, default=str)
-            if isinstance(message, str):
-                message = message.encode('utf-8')
-
-            return await self._client.publish(channel, message)
-        except Exception:
-            return 0
-
-    async def subscribe(self, *channels: str) -> aioredis.client.PubSub:
-        """Подписка на каналы"""
-        if not self._connected:
-            await self.connect()
-        if not self._connected:
-            return None
-
-        try:
-            if not self._pubsub:
-                self._pubsub = self._client.pubsub()
-
-            await self._pubsub.subscribe(*channels)
-            return self._pubsub
-        except Exception:
-            return None
-
-    # ============ Специализированные методы для трейдинга ============
-
-    async def cache_market_data(
-            self,
-            symbol: str,
-            data: Dict[str, Any],
-            ttl: int = 300
-    ) -> bool:
-        """Кеширование рыночных данных"""
-        key = f"market:{symbol}"
-        return await self.set(key, data, expire=ttl)
-
-    async def get_market_data(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Получение рыночных данных из кеша"""
-        key = f"market:{symbol}"
-        return await self.get(key)
-
-    async def cache_indicators(
-            self,
-            symbol: str,
-            timeframe: str,
-            indicators: Dict[str, float],
-            ttl: int = 300
-    ) -> bool:
-        """Кеширование индикаторов"""
-        if not self._connected:
-            return False
-
-        try:
-            key = f"indicators:{symbol}:{timeframe}"
-            for indicator_name, value in indicators.items():
-                await self.hset(key, indicator_name, value)
-            if self._connected and self._client:
-                await self._client.expire(key, ttl)
-            return True
-        except Exception:
-            return False
-
-    async def get_indicators(
-            self,
-            symbol: str,
-            timeframe: str
-    ) -> Dict[str, float]:
-        """Получение индикаторов из кеша"""
-        key = f"indicators:{symbol}:{timeframe}"
-        return await self.hgetall(key)
-
-    async def add_price_history(
-            self,
-            symbol: str,
-            price: float,
-            timestamp: Optional[datetime] = None,
-            max_length: int = 1000
-    ) -> None:
-        """Добавление цены в историю"""
-        if not self._connected:
-            return
-
-        try:
-            key = f"prices:{symbol}"
-            ts = timestamp or datetime.utcnow()
-
-            data = {
-                "price": price,
-                "timestamp": ts.isoformat()
-            }
-
-            await self.lpush(key, data)
-            await self.ltrim(key, 0, max_length - 1)
-        except Exception:
-            pass
-
-    async def get_price_history(
-            self,
-            symbol: str,
-            limit: int = 100
-    ) -> List[Dict[str, Any]]:
-        """Получение истории цен"""
-        key = f"prices:{symbol}"
-        return await self.lrange(key, 0, limit - 1)
-
-    async def set_position(
-            self,
-            position_id: str,
-            position_data: Dict[str, Any]
-    ) -> bool:
-        """Сохранение информации о позиции"""
-        key = f"position:{position_id}"
-        return await self.set(key, position_data)
-
-    async def get_position(self, position_id: str) -> Optional[Dict[str, Any]]:
-        """Получение информации о позиции"""
-        key = f"position:{position_id}"
-        return await self.get(key)
-
-    async def get_all_positions(self) -> List[Dict[str, Any]]:
-        """Получение всех открытых позиций"""
-        if not self._connected:
-            return []
-
-        try:
-            pattern = "position:*"
-            positions = []
-
-            cursor = 0
             while True:
-                cursor, keys = await self._client.scan(
-                    cursor,
-                    match=pattern,
-                    count=100
-                )
-
-                for key in keys:
-                    if isinstance(key, bytes):
-                        key = key.decode('utf-8')
-                    position = await self.get(key)
-                    if position:
-                        positions.append(position)
-
+                cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=count)
+                if batch:
+                    out.extend(k.decode("utf-8") if isinstance(k, bytes) else k for k in batch)
                 if cursor == 0:
                     break
+        except Exception as e:
+            logger.logger.debug(f"Redis keys error for pattern {pattern}: {e}")
+        return out
 
-            return positions
-        except Exception:
-            return []
-
-    # ============ Метрики и статистика ============
-
-    async def increment_counter(self, key: str, amount: int = 1) -> int:
-        """Инкремент счётчика"""
+    async def delete_pattern(self, pattern: str, count: int = 500) -> int:
+        """Удаление по паттерну через SCAN + UNLINK (fallback DEL)."""
         if not self._connected:
             await self.connect()
         if not self._connected:
             return 0
+        deleted = 0
+        cursor = 0
         try:
-            return await self._client.incrby(key, amount)
-        except Exception:
-            return 0
+            while True:
+                cursor, batch = await self._redis.scan(cursor=cursor, match=pattern, count=count)
+                if batch:
+                    try:
+                        deleted += await self._redis.unlink(*batch)
+                    except Exception:
+                        deleted += await self._redis.delete(*batch)
+                if cursor == 0:
+                    break
+        except Exception as e:
+            logger.logger.debug(f"Redis delete_pattern error for {pattern}: {e}")
+        return deleted
 
-    async def get_counter(self, key: str) -> int:
-        """Получение значения счётчика"""
-        value = await self.get(key)
-        return int(value) if value else 0
+    async def flushdb(self, asynchronous: bool = True) -> bool:
+        if not self._connected:
+            await self.connect()
+        if not self._connected:
+            return False
+        try:
+            await self._redis.flushdb(asynchronous=asynchronous)
+            logger.logger.info("Redis database flushed")
+            return True
+        except Exception as e:
+            logger.logger.debug(f"Redis flushdb error: {e}")
+            return False
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
 
 
 class CacheManager:
-    """Менеджер кеширования с декораторами"""
-
     def __init__(self, redis_client: RedisClient):
         self.redis = redis_client
 
-    def cache_result(
-            self,
-            ttl: int = 300,
-            prefix: str = "cache",
-            key_builder: Optional[Callable] = None
-    ):
-        """
-        Декоратор для кеширования результатов функций
-
-        Usage:
-            @cache_manager.cache_result(ttl=600)
-            async def expensive_calculation(param1, param2):
-                ...
-        """
-
-        def decorator(func: Callable) -> Callable:
-            @wraps(func)
-            async def wrapper(*args, **kwargs):
-                # Если Redis недоступен, просто выполняем функцию
-                if not self.redis._connected:
-                    await self.redis.connect()
-
-                if not self.redis._connected:
-                    # Redis недоступен, выполняем без кеширования
-                    return await func(*args, **kwargs)
-
-                # Построение ключа кеша
-                if key_builder:
-                    cache_key = key_builder(*args, **kwargs)
-                else:
-                    # Генерация ключа на основе аргументов
-                    key_data = f"{func.__name__}:{args}:{kwargs}"
-                    key_hash = hashlib.md5(key_data.encode()).hexdigest()
-                    cache_key = f"{prefix}:{key_hash}"
-
-                # Проверка кеша
-                cached = await self.redis.get(cache_key)
-                if cached is not None:
-                    logger.logger.debug(
-                        "Cache hit",
-                        function=func.__name__,
-                        key=cache_key
-                    )
-                    return cached
-
-                # Выполнение функции
-                result = await func(*args, **kwargs)
-
-                # Сохранение в кеш (если Redis доступен)
-                if self.redis._connected:
-                    await self.redis.set(cache_key, result, expire=ttl)
-                    logger.logger.debug(
-                        "Cache set",
-                        function=func.__name__,
-                        key=cache_key,
-                        ttl=ttl
-                    )
-
-                return result
-
-            return wrapper
-
-        return decorator
-
     async def invalidate_pattern(self, pattern: str) -> int:
-        """Инвалидация кеша по паттерну"""
+        return await self.redis.delete_pattern(pattern)
+
+    async def cache_indicators(self, symbol: str, timeframe: str, data: dict, ttl: int = 60):
         if not self.redis._connected:
             await self.redis.connect()
-
         if not self.redis._connected:
-            return 0
+            return False
+        key = f"indicators:{symbol}:{timeframe}"
+        return await self.redis.set(key, data, expire=ttl)
 
-        try:
-            deleted = 0
-            cursor = 0
+    async def get_indicators(self, symbol: str, timeframe: str):
+        key = f"indicators:{symbol}:{timeframe}"
+        return await self.redis.get(key)
 
-            while True:
-                cursor, keys = await self.redis._client.scan(
-                    cursor,
-                    match=pattern,
-                    count=100
-                )
-
-                if keys:
-                    deleted += await self.redis.delete(*keys)
-
-                if cursor == 0:
-                    break
-
-            logger.logger.info(
-                "Cache invalidated",
-                pattern=pattern,
-                deleted_keys=deleted
-            )
-
-            return deleted
-        except Exception:
-            return 0
+    async def invalidate_symbol(self, symbol: str) -> int:
+        total = 0
+        for p in (f"historical:{symbol}:*", f"indicators:{symbol}:*", f"kline:{symbol}:*", f"ticker:{symbol}:*", f"market:{symbol}:*"):
+            total += await self.redis.delete_pattern(p)
+        return total
 
 
-# Создание глобальных экземпляров
+# Глобальные экземпляры
 redis_client = RedisClient()
 cache_manager = CacheManager(redis_client)
 
 
-# Вспомогательные функции
-async def init_redis(url: str = None):
-    """Инициализация Redis соединения"""
-    global redis_client, cache_manager
-    if url:
-        redis_client = RedisClient(url)
-        cache_manager = CacheManager(redis_client)
-
-    await redis_client.connect()
-    return redis_client
-
-
 async def close_redis():
-    """Закрытие Redis соединения"""
     await redis_client.disconnect()

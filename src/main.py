@@ -1,407 +1,403 @@
-# src/main.py
 """
-Главная точка входа для криптовалютного торгового бота
-Управляет режимами работы: monitor, paper, live
+Main entrypoint for the Crypto Trading Bot v3.0
+With fixed metrics tracking and improved monitoring
 """
+
+# --- PATH FIX: позволяет запускать `python src/main.py` из корня проекта ---
+import os, sys
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+# ---------------------------------------------------------------------------
+
 import asyncio
-import sys
 import signal
 import platform
-from pathlib import Path
-from typing import Optional
+from datetime import datetime, timedelta, timezone
 
-# Добавляем корневую директорию в path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.monitoring.logger import logger
+from src.config.settings import settings
+from src.data.storage.redis_client import redis_client, close_redis
+from src.bots.advanced_paper_bot import AdvancedPaperTradingBot
 
-# Импортируем uvloop только на Unix системах
+# Опциональные метрики
 try:
-    if platform.system() != "Windows":
-        import uvloop
-
-        USE_UVLOOP = True
-    else:
-        USE_UVLOOP = False
-except ImportError:
-    USE_UVLOOP = False
-
-from src.config.settings import settings, BotMode
-from src.monitoring.logger import logger, set_log_level
-from src.data.storage.redis_client import init_redis
-from src.utils.banner import print_banner
-
-# Импортируем боты только при необходимости
-try:
-    from src.bots.advanced_paper_bot import AdvancedPaperTradingBot
-
-    ADVANCED_BOT_AVAILABLE = True
-except ImportError:
-    ADVANCED_BOT_AVAILABLE = False
-    AdvancedPaperTradingBot = None
-
-try:
-    from src.bots.paper_trading_bot_v5 import EnhancedPaperTradingBotV5
-except ImportError:
-    EnhancedPaperTradingBotV5 = None
-
-try:
-    from src.bots.trading_bot import TradingBot
-except ImportError:
-    TradingBot = None
-
-try:
-    from src.monitoring.metrics import MetricsServer
-except ImportError:
-    MetricsServer = None
+    from src.monitoring.metrics import start as start_metrics_server, stop as stop_metrics_server
+    METRICS_AVAILABLE = True
+except Exception:
+    METRICS_AVAILABLE = False
 
 
-class Application:
-    """Главное приложение"""
+async def check_environment():
+    """Расширенная проверка окружения с рекомендациями"""
+    logger.logger.info("=" * 80)
+    logger.logger.info("ENVIRONMENT CHECK v3.0")
+    logger.logger.info("=" * 80)
 
-    def __init__(self):
-        self.bot = None
-        self.metrics_server = None
-        self.shutdown_event = asyncio.Event()
+    checks_passed = 0
+    checks_total = 0
 
-    async def check_environment(self) -> bool:
-        """Проверка окружения и зависимостей"""
-        logger.logger.info("Checking environment...")
-
-        # Проверка Redis
-        try:
-            redis_url = settings.database.redis_url
-            await init_redis(redis_url)
-
-            # Простая проверка Redis
-            from src.data.storage.redis_client import redis_client
-            await redis_client.set("health_check", "OK", expire=10)
-            result = await redis_client.get("health_check")
-
-            if result != "OK":
-                logger.logger.error("✗ Redis health check failed")
-                return False
-
+    # 1) Redis
+    checks_total += 1
+    try:
+        await redis_client.connect()
+        await redis_client.set("health_check", "OK", expire=10)
+        result = await redis_client.get("health_check")
+        if result == "OK":
             logger.logger.info("✅ Redis connection OK")
-
-        except Exception as e:
-            logger.logger.warning(f"⚠️ Redis connection failed: {e}")
-            logger.logger.info("Will continue without Redis caching")
-
-        # Проверка базы данных (если не в monitor режиме)
-        if settings.BOT_MODE != BotMode.MONITOR:
-            try:
-                # TODO: Добавить проверку PostgreSQL/TimescaleDB
-                logger.logger.info("✅ Database connection OK (not implemented)")
-            except Exception as e:
-                logger.logger.warning(f"Database not configured: {e}")
-
-        # Проверка API ключей
-        if settings.BOT_MODE in [BotMode.PAPER, BotMode.LIVE]:
-            api_key = settings.api.BINANCE_API_KEY.get_secret_value() if settings.api.BINANCE_API_KEY else None
-            api_secret = settings.api.BINANCE_API_SECRET.get_secret_value() if settings.api.BINANCE_API_SECRET else None
-
-            if not api_key or not api_secret:
-                logger.logger.error("✗ Binance API credentials not configured")
-                return False
-            logger.logger.info("✅ API credentials configured")
-
-        # Проверка зависимостей для продвинутого бота
-        if ADVANCED_BOT_AVAILABLE:
-            logger.logger.info("✅ Advanced trading bot available")
-
-            # Проверяем дополнительные зависимости
-            try:
-                import binance
-                logger.logger.info("✅ Binance library installed")
-            except ImportError:
-                logger.logger.warning("⚠️ Binance library not installed - advanced features limited")
-
-            try:
-                import xgboost
-                import lightgbm
-                logger.logger.info("✅ ML libraries installed")
-            except ImportError:
-                logger.logger.warning("⚠️ ML libraries not installed - ML features disabled")
+            checks_passed += 1
         else:
-            logger.logger.warning("⚠️ Advanced bot not available - using basic paper trading")
+            logger.logger.warning("⚠️ Redis test value mismatch (will continue without caching)")
+    except Exception as e:
+        logger.logger.warning(f"⚠️ Redis connection failed: {e}")
+        logger.logger.info("   → Bot will work without caching (may affect performance)")
 
-        return True
-
-    async def initialize_bot(self):
-        """Инициализация бота в зависимости от режима"""
-        mode = settings.BOT_MODE
-
-        logger.logger.info(f"Initializing bot in {mode.value} mode...")
-
-        if mode == BotMode.MONITOR:
-            # Режим мониторинга - только сбор данных без торговли
-            logger.logger.info("Monitor mode: collecting data without trading")
-            # TODO: Инициализировать MonitorBot
-            logger.logger.warning("Monitor mode not implemented yet")
-
-        elif mode == BotMode.PAPER:
-            # Paper trading
-            # Сначала пытаемся использовать продвинутый бот
-            if ADVANCED_BOT_AVAILABLE:
-                try:
-                    logger.logger.info("Initializing Advanced Paper Trading Bot...")
-
-                    self.bot = AdvancedPaperTradingBot(
-                        initial_balance=settings.PAPER_STARTING_BALANCE,
-                        maker_fee=settings.PAPER_MAKER_FEE,
-                        taker_fee=settings.PAPER_TAKER_FEE,
-                        slippage_bps=settings.PAPER_SLIPPAGE_BPS
-                    )
-
-                    await self.bot.initialize()
-                    logger.logger.info("✅ Advanced Paper Trading Bot initialized")
-                    logger.logger.info("Bot features: Real-time data, ML predictions, Multi-strategy signals")
-
-                except Exception as e:
-                    logger.logger.error(f"Failed to initialize advanced bot: {e}")
-                    logger.logger.info("Falling back to basic paper trading bot...")
-
-                    # Откат на базовый бот
-                    if EnhancedPaperTradingBotV5 is None:
-                        raise ImportError("No paper trading bot available")
-
-                    self.bot = EnhancedPaperTradingBotV5(
-                        initial_balance=settings.PAPER_STARTING_BALANCE,
-                        maker_fee=settings.PAPER_MAKER_FEE,
-                        taker_fee=settings.PAPER_TAKER_FEE,
-                        slippage_bps=settings.PAPER_SLIPPAGE_BPS
-                    )
-
-                    await self.bot.initialize()
-                    logger.logger.info("✅ Basic Paper Trading Bot initialized")
-
-            else:
-                # Используем базовый бот если продвинутый недоступен
-                if EnhancedPaperTradingBotV5 is None:
-                    raise ImportError("Paper trading bot not available")
-
-                self.bot = EnhancedPaperTradingBotV5(
-                    initial_balance=settings.PAPER_STARTING_BALANCE,
-                    maker_fee=settings.PAPER_MAKER_FEE,
-                    taker_fee=settings.PAPER_TAKER_FEE,
-                    slippage_bps=settings.PAPER_SLIPPAGE_BPS
-                )
-
-                try:
-                    await self.bot.initialize()
-                    logger.logger.info("✅ Paper trading bot initialized")
-                except Exception as e:
-                    logger.logger.error(f"Failed to initialize paper trading bot: {e}")
-                    raise
-
-        elif mode == BotMode.LIVE:
-            # Live trading
-            if settings.ENVIRONMENT.value != "production":
-                logger.logger.warning("⚠️ Live trading in non-production environment!")
-                logger.logger.warning("⚠️ THIS IS REAL MONEY - ARE YOU SURE?")
-
-                # Добавляем задержку для безопасности
-                logger.logger.info("Starting in 10 seconds... Press Ctrl+C to cancel")
-                await asyncio.sleep(10)
-
-            if TradingBot is None:
-                raise ImportError("Live trading bot not available")
-
-            self.bot = TradingBot()
-            await self.bot.initialize()
-            logger.logger.info("✅ Live trading bot initialized")
-            logger.logger.warning("⚠️ LIVE TRADING ACTIVE - Real money at risk!")
-
+    # 2) Database
+    checks_total += 1
+    try:
+        if hasattr(settings.database, 'postgres_url'):
+            logger.logger.info("✅ Database configuration found")
+            checks_passed += 1
         else:
-            raise ValueError(f"Unknown bot mode: {mode}")
+            logger.logger.info("ℹ️ Database not configured (using in-memory storage)")
+    except Exception:
+        logger.logger.info("ℹ️ Database not configured (using in-memory storage)")
 
-    async def start_metrics_server(self):
-        """Запуск сервера метрик"""
-        if settings.monitoring.ENABLE_PROMETHEUS and MetricsServer:
-            try:
-                self.metrics_server = MetricsServer(port=settings.monitoring.PROMETHEUS_PORT)
-                await self.metrics_server.start()
-                logger.logger.info(f"✅ Metrics server started on port {settings.monitoring.PROMETHEUS_PORT}")
-                logger.logger.info(
-                    f"   Access metrics at: http://localhost:{settings.monitoring.PROMETHEUS_PORT}/metrics")
-            except Exception as e:
-                logger.logger.warning(f"Failed to start metrics server: {e}")
+    # 3) API credentials
+    checks_total += 1
+    if settings.api.BINANCE_API_KEY and settings.api.BINANCE_API_SECRET:
+        logger.logger.info("✅ API credentials configured")
+        if settings.api.TESTNET:
+            logger.logger.info("   → Using TESTNET mode (paper trading)")
         else:
-            logger.logger.info("Metrics server disabled or not available")
+            logger.logger.info("   → Using LIVE mode")
+        checks_passed += 1
+    else:
+        logger.logger.warning("⚠️ API credentials missing")
+        logger.logger.info("   → Add BINANCE_API_KEY and BINANCE_API_SECRET to .env file")
 
-    async def run(self):
-        """Основной цикл выполнения"""
+    # 4) Trading configuration
+    checks_total += 1
+    logger.logger.info("✅ Trading configuration:")
+    logger.logger.info(f"   → Symbols: {', '.join(settings.trading.SYMBOLS[:3])}")
+    logger.logger.info(f"   → Timeframe: {settings.trading.PRIMARY_TIMEFRAME}")
+    logger.logger.info(f"   → Initial capital: ${settings.trading.INITIAL_CAPITAL:,.2f}")
+    logger.logger.info(f"   → Max positions: {settings.trading.MAX_POSITIONS}")
+    logger.logger.info(f"   → Max drawdown: {settings.trading.MAX_DRAWDOWN_PERCENT}%")
+    checks_passed += 1
+
+    # 5) Python packages
+    checks_total += 1
+    packages_ok = True
+    required_packages = {
+        'binance': 'python-binance',
+        'numpy': 'numpy',
+        'pandas': 'pandas',
+        'pandas_ta': 'pandas-ta',
+        'asyncpg': 'asyncpg (optional)',
+        'redis': 'redis'
+    }
+
+    missing_packages = []
+    for module, package in required_packages.items():
         try:
-            # Печать баннера
-            print_banner()
+            __import__(module)
+        except ImportError:
+            missing_packages.append(package)
+            packages_ok = False
 
-            # Установка уровня логирования
-            set_log_level(settings.monitoring.LOG_LEVEL)
+    if packages_ok:
+        logger.logger.info("✅ All required Python packages installed")
+        checks_passed += 1
+    else:
+        logger.logger.warning(f"⚠️ Missing packages: {', '.join(missing_packages)}")
+        logger.logger.info("   → Install with: pip install " + " ".join(missing_packages))
 
-            # Информация о конфигурации
+    # 6) ML models
+    checks_total += 1
+    try:
+        from src.ml.models.ml_engine import ml_engine
+        logger.logger.info("✅ ML engine available")
+        checks_passed += 1
+    except Exception:
+        logger.logger.info("ℹ️ ML engine not available (bot will work without ML signals)")
+
+    # Summary
+    logger.logger.info("=" * 80)
+    logger.logger.info(f"Environment check complete: {checks_passed}/{checks_total} checks passed")
+
+    if checks_passed < 3:
+        logger.logger.warning("⚠️ Some critical components are missing. Bot may not work properly.")
+        logger.logger.info("Continuing anyway... Press Ctrl+C to stop.")
+    else:
+        logger.logger.info("✅ Environment is ready for trading!")
+
+    logger.logger.info("=" * 80)
+
+
+async def start_metrics():
+    """Запуск сервера метрик с улучшенным логированием"""
+    if not METRICS_AVAILABLE:
+        return
+    try:
+        port = 8000
+        await start_metrics_server(port=port)
+        logger.logger.info("✅ Metrics server started")
+        logger.logger.info(f"   → Dashboard: http://localhost:{port}/")
+        logger.logger.info(f"   → Metrics endpoint: http://localhost:{port}/metrics")
+    except Exception as e:
+        logger.logger.warning(f"⚠️ Metrics server failed to start: {e}")
+
+
+async def initialize_bot() -> AdvancedPaperTradingBot:
+    """Инициализация бота с расширенным логированием"""
+    logger.logger.info("=" * 80)
+    logger.logger.info("INITIALIZING ADVANCED PAPER TRADING BOT v3.0")
+    logger.logger.info("=" * 80)
+
+    logger.logger.info("Critical fixes in v3.0:")
+    logger.logger.info("  ✅ FIXED: Filters now apply only to real signals (not HOLD)")
+    logger.logger.info("  ✅ FIXED: Proper metric counting logic")
+    logger.logger.info("  ✅ FIXED: Correlation checks only opposite directions")
+    logger.logger.info("")
+    logger.logger.info("Optimized parameters:")
+    logger.logger.info("  • Confidence threshold: 0.65 (reduced from 0.75)")
+    logger.logger.info("  • Signals required: 2.0 (reduced from 2.5)")
+    logger.logger.info("  • RSI levels: 30/70 (standard)")
+    logger.logger.info("  • Time between trades: 30 minutes (reduced from 2 hours)")
+    logger.logger.info("  • Adaptive volatility thresholds by symbol")
+    logger.logger.info("  • Position size: 5% (safe sizing)")
+    logger.logger.info("  • Partial profit taking at 1.5*ATR")
+    logger.logger.info("  • Trailing stop-loss implementation")
+
+    bot = AdvancedPaperTradingBot(
+        initial_balance=settings.trading.INITIAL_CAPITAL
+    )
+    await bot.initialize()
+
+    # Показываем адаптивные пороги волатильности
+    logger.logger.info("")
+    logger.logger.info("Adaptive volatility thresholds:")
+    for symbol in settings.trading.SYMBOLS[:3]:
+        threshold = bot.get_adaptive_volatility_threshold(symbol)
+        logger.logger.info(f"  • {symbol}: {threshold:.2f}% minimum ATR")
+
+    logger.logger.info("=" * 80)
+    logger.logger.info("✅ Bot initialized successfully!")
+    logger.logger.info("=" * 80)
+
+    return bot
+
+
+async def periodic_summary(bot: AdvancedPaperTradingBot, interval_minutes: int = 30):
+    """Периодический отчёт о производительности с исправленными метриками"""
+    while bot.running:
+        await asyncio.sleep(interval_minutes * 60)
+
+        if not bot.running:
+            break
+
+        # Расчёт метрик
+        all_trades = [t for t in bot.trade_history if t.get('type') != 'partial_close']
+        if not all_trades and bot.performance_metrics['total_signals'] == 0:
+            continue
+
+        now = datetime.now(timezone.utc)
+        recent_trades = [
+            t for t in all_trades
+            if (now - t['timestamp'].replace(tzinfo=timezone.utc)).total_seconds() < interval_minutes * 60
+        ] if all_trades else []
+
+        logger.logger.info("=" * 80)
+        logger.logger.info(f"📊 {interval_minutes}-MINUTE SUMMARY")
+        logger.logger.info("=" * 80)
+
+        # Анализ сигналов
+        if bot.performance_metrics['total_analyses'] > 0:
+            signal_rate = bot.performance_metrics['total_signals'] / bot.performance_metrics['total_analyses'] * 100
             logger.logger.info(
-                "Starting Crypto Trading Bot",
-                environment=settings.ENVIRONMENT.value,
-                mode=settings.BOT_MODE.value,
-                trading_mode=settings.TRADING_MODE.value,
-                version=settings.VERSION,
-                platform=platform.system()
+                f"Market Analysis: {bot.performance_metrics['total_analyses']} scans | "
+                f"Signal Rate: {signal_rate:.1f}% | "
+                f"Signals: {bot.performance_metrics['total_signals']} | "
+                f"HOLD: {bot.performance_metrics['hold_signals']}"
             )
 
-            # Проверка окружения
-            if not await self.check_environment():
-                logger.logger.error("Environment check failed. Exiting...")
-                sys.exit(1)
+        # Торговая активность
+        if recent_trades:
+            recent_pnl = sum(t['pnl'] for t in recent_trades)
+            wins = [t for t in recent_trades if t['pnl'] > 0]
+            win_rate = len(wins) / len(recent_trades) * 100 if recent_trades else 0
 
-            # Запуск метрик
-            await self.start_metrics_server()
+            logger.logger.info(
+                f"Trades in period: {len(recent_trades)} | "
+                f"PnL: ${recent_pnl:.2f} | "
+                f"Win rate: {win_rate:.1f}%"
+            )
+        else:
+            logger.logger.info("No trades executed in this period")
 
-            # Инициализация бота
-            await self.initialize_bot()
+        # Фильтры
+        if bot.performance_metrics['total_signals'] > 0:
+            exec_rate = bot.performance_metrics['executed_signals'] / bot.performance_metrics['total_signals'] * 100
+            logger.logger.info(
+                f"Filter Performance: Execution Rate {exec_rate:.1f}% | "
+                f"Top rejection: Volatility={bot.performance_metrics['skipped_low_volatility']}, "
+                f"Time={bot.performance_metrics['skipped_time_limit']}"
+            )
 
-            # Запуск бота
-            if self.bot:
-                logger.logger.info("🚀 Starting bot main loop...")
+        logger.logger.info("=" * 80)
 
-                # Выводим информацию о типе бота
-                bot_type = type(self.bot).__name__
-                logger.logger.info(f"Bot type: {bot_type}")
 
-                if bot_type == "AdvancedPaperTradingBot":
-                    logger.logger.info("Features enabled:")
-                    logger.logger.info("  • Real-time market data from Binance")
-                    logger.logger.info("  • Technical indicators (RSI, MACD, BB)")
-                    logger.logger.info("  • Machine Learning predictions")
-                    logger.logger.info("  • Advanced risk management")
-                    logger.logger.info("  • Multi-strategy signal generation")
-                    logger.logger.info("")
-                    logger.logger.info("Monitoring symbols: " + ", ".join(settings.trading.SYMBOLS[:3]))
-                    logger.logger.info(f"Primary timeframe: {settings.trading.PRIMARY_TIMEFRAME}")
-                    logger.logger.info("")
-                    logger.logger.info("Bot will start trading when strong signals are detected...")
+async def run():
+    """Основная функция запуска с улучшенным управлением"""
+    if platform.system() == "Windows":
+        logger.logger.info("Detected Windows OS - using default event loop")
 
-                # Создаем задачу для бота
-                bot_task = asyncio.create_task(self.bot.run())
+    # Время запуска
+    start_time = datetime.now(timezone.utc)
+    logger.logger.info(f"Bot starting at {start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
-                # Ждём сигнала остановки или завершения бота
-                done, pending = await asyncio.wait(
-                    [bot_task, asyncio.create_task(self.shutdown_event.wait())],
-                    return_when=asyncio.FIRST_COMPLETED
-                )
+    await check_environment()
 
-                # Останавливаем бота
-                logger.logger.info("🛑 Stopping bot...")
+    if METRICS_AVAILABLE:
+        await start_metrics()
 
-                if hasattr(self.bot, 'stop'):
-                    await self.bot.stop()
+    bot = await initialize_bot()
 
-                # Отменяем незавершённые задачи
-                for task in pending:
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+    logger.logger.info("=" * 80)
+    logger.logger.info("🚀 STARTING MAIN TRADING LOOP v3.0")
+    logger.logger.info("=" * 80)
+    logger.logger.info("")
+    logger.logger.info("Bot is now actively monitoring markets...")
+    logger.logger.info("Signals will be generated based on technical indicators.")
+    logger.logger.info("Filters will be applied only to actionable signals (BUY/SELL).")
+    logger.logger.info("")
+    logger.logger.info("Expected behavior:")
+    logger.logger.info("  • Market scan every 60 seconds")
+    logger.logger.info("  • Signals require min 2.0 indicator confirmations")
+    logger.logger.info("  • Filters check: confidence, volatility, volume, time, correlation")
+    logger.logger.info("  • Positions: 5% of balance, max 5 concurrent")
+    logger.logger.info("  • Risk management: SL at 2*ATR, TP at 3*ATR")
+    logger.logger.info("")
+    logger.logger.info("Commands:")
+    logger.logger.info("  • Press Ctrl+C to stop the bot gracefully")
+    logger.logger.info("  • Check logs for detailed trading activity")
+    if METRICS_AVAILABLE:
+        logger.logger.info("  • View metrics at http://localhost:8000/")
+    logger.logger.info("")
+    logger.logger.info("Happy trading! 🎯")
+    logger.logger.info("=" * 80)
 
-            else:
-                # Если бот не инициализирован, просто ждём сигнала
-                logger.logger.info("No bot initialized, waiting for shutdown signal...")
-                await self.shutdown_event.wait()
+    # Грейсфул шутдаун
+    stop_event = asyncio.Event()
 
-        except KeyboardInterrupt:
-            logger.logger.info("Received keyboard interrupt")
-        except Exception as e:
-            logger.logger.error(f"Application run failed: {e}")
-            raise
-        finally:
-            await self.cleanup()
+    def _handle_sig(*_):
+        logger.logger.info("")
+        logger.logger.info("=" * 80)
+        logger.logger.info("📛 SHUTDOWN SIGNAL RECEIVED")
+        logger.logger.info("=" * 80)
+        logger.logger.info("Closing positions and saving state...")
+        stop_event.set()
 
-    async def cleanup(self):
-        """Очистка ресурсов"""
-        logger.logger.info("🧹 Cleaning up resources...")
-
-        if self.metrics_server:
-            try:
-                await self.metrics_server.stop()
-            except Exception as e:
-                logger.logger.warning(f"Error stopping metrics server: {e}")
-
-        # Закрываем Redis соединение
+    for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            from src.data.storage.redis_client import close_redis
-            await close_redis()
-        except Exception as e:
-            logger.logger.warning(f"Error closing Redis connection: {e}")
+            asyncio.get_running_loop().add_signal_handler(sig, _handle_sig)
+        except NotImplementedError:
+            # Windows не поддерживает add_signal_handler
+            signal.signal(sig, _handle_sig)
 
-        logger.logger.info("✅ Cleanup completed")
+    # Запускаем основные задачи
+    bot_task = asyncio.create_task(bot.run())
+    summary_task = asyncio.create_task(periodic_summary(bot, interval_minutes=30))
 
-    def handle_signal(self, sig, frame):
-        """Обработчик сигналов"""
-        logger.logger.info(f"Received signal {sig}")
+    # Ждём сигнал остановки
+    await stop_event.wait()
 
-        # Устанавливаем событие остановки
-        if not self.shutdown_event.is_set():
-            asyncio.create_task(self._set_shutdown_event())
-
-    async def _set_shutdown_event(self):
-        """Установка события остановки"""
-        self.shutdown_event.set()
-
-
-def setup_signal_handlers(app: Application):
-    """Настройка обработчиков сигналов"""
+    # Останавливаем бота
+    logger.logger.info("Stopping bot...")
     try:
-        # В Windows доступны только SIGINT и SIGTERM
-        signal.signal(signal.SIGINT, app.handle_signal)
-
-        if platform.system() != "Windows":
-            signal.signal(signal.SIGTERM, app.handle_signal)
-
+        await bot.stop()
     except Exception as e:
-        logger.logger.warning(f"Failed to setup signal handlers: {e}")
+        logger.logger.warning(f"Error while stopping bot: {e}")
 
-
-async def main():
-    """Главная функция"""
-    # Используем uvloop только если доступен (Unix системы)
-    if USE_UVLOOP:
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-        logger.logger.info("Using uvloop for better performance")
-    else:
-        logger.logger.info(f"Using default event loop on {platform.system()}")
-
-    app = Application()
-
-    # Регистрация обработчиков сигналов
-    setup_signal_handlers(app)
-
+    # Останавливаем периодические задачи
+    summary_task.cancel()
     try:
-        await app.run()
-    except Exception as e:
-        logger.logger.error(f"Fatal error: {e}")
-        return 1
+        await summary_task
+    except asyncio.CancelledError:
+        pass
 
-    return 0
+    # Останавливаем метрики
+    if METRICS_AVAILABLE:
+        try:
+            await stop_metrics_server()
+            logger.logger.info("✅ Metrics server stopped")
+        except Exception:
+            pass
+
+    # Закрываем Redis
+    try:
+        await close_redis()
+        logger.logger.info("✅ Redis connection closed")
+    except Exception as e:
+        logger.logger.warning(f"Error closing Redis connection: {e}")
+
+    # Отменяем основную задачу бота
+    if not bot_task.done():
+        bot_task.cancel()
+        try:
+            await bot_task
+        except asyncio.CancelledError:
+            logger.logger.info("✅ Trading loop cancelled")
+
+    # Финальная статистика
+    end_time = datetime.now(timezone.utc)
+    runtime = end_time - start_time
+    hours = runtime.total_seconds() / 3600
+
+    logger.logger.info("=" * 80)
+    logger.logger.info("✅ BOT STOPPED SUCCESSFULLY")
+    logger.logger.info("=" * 80)
+    logger.logger.info(f"Total runtime: {hours:.1f} hours")
+    logger.logger.info(f"Stopped at: {end_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+
+    # Финальная сводка по метрикам
+    if bot.performance_metrics['total_analyses'] > 0:
+        logger.logger.info("")
+        logger.logger.info("Session Summary:")
+        logger.logger.info(f"  • Market analyses: {bot.performance_metrics['total_analyses']}")
+        logger.logger.info(f"  • Trading signals: {bot.performance_metrics['total_signals']}")
+        logger.logger.info(f"  • Trades executed: {bot.performance_metrics['executed_signals']}")
+
+        if bot.performance_metrics['total_signals'] > 0:
+            exec_rate = bot.performance_metrics['executed_signals'] / bot.performance_metrics['total_signals'] * 100
+            logger.logger.info(f"  • Execution rate: {exec_rate:.1f}%")
+
+    logger.logger.info("=" * 80)
+    logger.logger.info("Thank you for using Advanced Paper Trading Bot v3.0!")
+    logger.logger.info("=" * 80)
+
+
+def main():
+    """Точка входа с обработкой исключений"""
+    try:
+        print("\n" + "=" * 80)
+        print("ADVANCED PAPER TRADING BOT v3.0")
+        print("With Critical Bug Fixes")
+        print("=" * 80)
+        print("Starting async event loop...")
+        print("")
+
+        asyncio.run(run())
+
+    except KeyboardInterrupt:
+        print("\n✅ Bot stopped by user")
+    except Exception as e:
+        print(f"\n❌ Fatal error: {e}")
+        raise
+    finally:
+        print("\nGoodbye! 👋")
 
 
 if __name__ == "__main__":
-    try:
-        # Выводим стартовое сообщение
-        print("\n" + "=" * 60)
-        print("CRYPTO TRADING BOT STARTING...")
-        print("=" * 60 + "\n")
-
-        exit_code = asyncio.run(main())
-
-        if exit_code == 0:
-            print("\n✅ Shutdown complete")
-
-        sys.exit(exit_code)
-
-    except KeyboardInterrupt:
-        print("\n⚠️ Interrupted by user")
-        print("✅ Shutdown complete")
-        sys.exit(0)
-
-    except Exception as e:
-        print(f"\n❌ Fatal error: {e}")
-        sys.exit(1)
+    main()
