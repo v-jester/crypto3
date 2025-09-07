@@ -1,0 +1,148 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crypto-trading-bot
+  namespace: trading
+  labels:
+    app: crypto-bot
+    version: v3.0
+spec:
+  replicas: 1  # Single instance for trading bot
+  strategy:
+    type: Recreate  # Ensure only one instance runs
+  selector:
+    matchLabels:
+      app: crypto-bot
+  template:
+    metadata:
+      labels:
+        app: crypto-bot
+        version: v3.0
+    spec:
+      serviceAccountName: crypto-bot
+
+      initContainers:
+      - name: wait-for-db
+        image: postgres:14-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready -h $DB_HOST -p $DB_PORT; do
+            echo "Waiting for database..."
+            sleep 2
+          done
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: crypto-bot-secrets
+              key: db-host
+        - name: DB_PORT
+          value: "5432"
+
+      - name: wait-for-redis
+        image: redis:7-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until redis-cli -h $REDIS_HOST ping; do
+            echo "Waiting for Redis..."
+            sleep 2
+          done
+        env:
+        - name: REDIS_HOST
+          valueFrom:
+            secretKeyRef:
+              name: crypto-bot-secrets
+              key: redis-host
+
+      containers:
+      - name: crypto-bot
+        image: ghcr.io/yourusername/crypto-trading-bot:latest
+        imagePullPolicy: Always
+
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: BOT_MODE
+          value: "live"
+        - name: LOG_LEVEL
+          value: "INFO"
+
+        envFrom:
+        - secretRef:
+            name: crypto-bot-secrets
+        - configMapRef:
+            name: crypto-bot-config
+
+        ports:
+        - containerPort: 8000
+          name: metrics
+          protocol: TCP
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        volumeMounts:
+        - name: logs
+          mountPath: /app/logs
+        - name: models
+          mountPath: /app/models
+        - name: data
+          mountPath: /app/data
+
+      volumes:
+      - name: logs
+        persistentVolumeClaim:
+          claimName: crypto-bot-logs-pvc
+      - name: models
+        persistentVolumeClaim:
+          claimName: crypto-bot-models-pvc
+      - name: data
+        persistentVolumeClaim:
+          claimName: crypto-bot-data-pvc
+
+      nodeSelector:
+        node-type: compute
+
+      tolerations:
+      - key: "dedicated"
+        operator: "Equal"
+        value: "trading"
+        effect: "NoSchedule"
+
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - crypto-bot
+            topologyKey: "kubernetes.io/hostname"
