@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crypto-bot-config
+  namespace: trading
+data:
+  # Trading Configuration
+  TRADING_INITIAL_CAPITAL: "50000"
+  TRADING_RISK_PER_TRADE: "0.02"
+  TRADING_MAX_POSITIONS: "5"
+  TRADING_MAX_DAILY_LOSS_PERCENT: "0.05"
+  TRADING_MAX_DRAWDOWN_PERCENT: "0.20"
+  TRADING_PRIMARY_TIMEFRAME: "15m"
+  TRADING_SYMBOLS: '["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","ADAUSDT"]'
+
+  # ML Configuration
+  ML_USE_XGBOOST: "true"
+  ML_USE_LIGHTGBM: "true"
+  ML_MIN_CONFIDENCE_THRESHOLD: "0.65"
+
+  # Signal Configuration
+  SIGNAL_RSI_OVERSOLD: "30"
+  SIGNAL_RSI_OVERBOUGHT: "70"
+  SIGNAL_MIN_VOLUME_RATIO: "1.5"
+
+  # Monitoring
+  MONITORING_ENABLE_PROMETHEUS: "true"
+  MONITORING_PROMETHEUS_PORT: "8000"
