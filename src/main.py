@@ -178,9 +178,14 @@ async def initialize_bot() -> AdvancedPaperTradingBot:
     # Показываем адаптивные пороги волатильности
     logger.logger.info("")
     logger.logger.info("Adaptive volatility thresholds:")
-    for symbol in settings.trading.SYMBOLS[:3]:
-        threshold = bot.get_adaptive_volatility_threshold(symbol)
-        logger.logger.info(f"  • {symbol}: {threshold:.2f}% minimum ATR")
+
+    # Проверяем наличие метода перед вызовом
+    if hasattr(bot, 'get_adaptive_volatility_threshold'):
+        for symbol in settings.trading.SYMBOLS[:3]:
+            threshold = bot.get_adaptive_volatility_threshold(symbol)
+            logger.logger.info(f"  • {symbol}: {threshold:.2%} minimum ATR")
+    else:
+        logger.logger.info("  • Using default thresholds")
 
     logger.logger.info("=" * 80)
     logger.logger.info("✅ Bot initialized successfully!")
@@ -197,9 +202,13 @@ async def periodic_summary(bot: AdvancedPaperTradingBot, interval_minutes: int =
         if not bot.running:
             break
 
+        # Проверяем наличие performance_metrics
+        if not hasattr(bot, 'performance_metrics'):
+            continue
+
         # Расчёт метрик
         all_trades = [t for t in bot.trade_history if t.get('type') != 'partial_close']
-        if not all_trades and bot.performance_metrics['total_signals'] == 0:
+        if not all_trades and bot.performance_metrics.get('total_signals', 0) == 0:
             continue
 
         now = datetime.now(timezone.utc)
@@ -213,13 +222,15 @@ async def periodic_summary(bot: AdvancedPaperTradingBot, interval_minutes: int =
         logger.logger.info("=" * 80)
 
         # Анализ сигналов
-        if bot.performance_metrics['total_analyses'] > 0:
-            signal_rate = bot.performance_metrics['total_signals'] / bot.performance_metrics['total_analyses'] * 100
+        total_analyses = bot.performance_metrics.get('total_analyses', 0)
+        if total_analyses > 0:
+            total_signals = bot.performance_metrics.get('total_signals', 0)
+            signal_rate = total_signals / total_analyses * 100
             logger.logger.info(
-                f"Market Analysis: {bot.performance_metrics['total_analyses']} scans | "
+                f"Market Analysis: {total_analyses} scans | "
                 f"Signal Rate: {signal_rate:.1f}% | "
-                f"Signals: {bot.performance_metrics['total_signals']} | "
-                f"HOLD: {bot.performance_metrics['hold_signals']}"
+                f"Signals: {total_signals} | "
+                f"HOLD: {bot.performance_metrics.get('hold_signals', 0)}"
             )
 
         # Торговая активность
@@ -237,12 +248,14 @@ async def periodic_summary(bot: AdvancedPaperTradingBot, interval_minutes: int =
             logger.logger.info("No trades executed in this period")
 
         # Фильтры
-        if bot.performance_metrics['total_signals'] > 0:
-            exec_rate = bot.performance_metrics['executed_signals'] / bot.performance_metrics['total_signals'] * 100
+        total_signals = bot.performance_metrics.get('total_signals', 0)
+        if total_signals > 0:
+            executed_signals = bot.performance_metrics.get('executed_signals', 0)
+            exec_rate = executed_signals / total_signals * 100
             logger.logger.info(
                 f"Filter Performance: Execution Rate {exec_rate:.1f}% | "
-                f"Top rejection: Volatility={bot.performance_metrics['skipped_low_volatility']}, "
-                f"Time={bot.performance_metrics['skipped_time_limit']}"
+                f"Top rejection: Volatility={bot.performance_metrics.get('skipped_low_volatility', 0)}, "
+                f"Time={bot.performance_metrics.get('skipped_time_limit', 0)}"
             )
 
         logger.logger.info("=" * 80)
@@ -288,13 +301,13 @@ async def run():
     logger.logger.info("Happy trading! 🎯")
     logger.logger.info("=" * 80)
 
-    # Грейсфул шутдаун
+    # Graceful shutdown
     stop_event = asyncio.Event()
 
     def _handle_sig(*_):
         logger.logger.info("")
         logger.logger.info("=" * 80)
-        logger.logger.info("📛 SHUTDOWN SIGNAL RECEIVED")
+        logger.logger.info("🔔 SHUTDOWN SIGNAL RECEIVED")
         logger.logger.info("=" * 80)
         logger.logger.info("Closing positions and saving state...")
         stop_event.set()
@@ -308,7 +321,11 @@ async def run():
 
     # Запускаем основные задачи
     bot_task = asyncio.create_task(bot.run())
-    summary_task = asyncio.create_task(periodic_summary(bot, interval_minutes=30))
+
+    # Запускаем периодический отчет только если у бота есть performance_metrics
+    summary_task = None
+    if hasattr(bot, 'performance_metrics'):
+        summary_task = asyncio.create_task(periodic_summary(bot, interval_minutes=30))
 
     # Ждём сигнал остановки
     await stop_event.wait()
@@ -321,11 +338,12 @@ async def run():
         logger.logger.warning(f"Error while stopping bot: {e}")
 
     # Останавливаем периодические задачи
-    summary_task.cancel()
-    try:
-        await summary_task
-    except asyncio.CancelledError:
-        pass
+    if summary_task:
+        summary_task.cancel()
+        try:
+            await summary_task
+        except asyncio.CancelledError:
+            pass
 
     # Останавливаем метрики
     if METRICS_AVAILABLE:
@@ -362,16 +380,20 @@ async def run():
     logger.logger.info(f"Stopped at: {end_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
     # Финальная сводка по метрикам
-    if bot.performance_metrics['total_analyses'] > 0:
-        logger.logger.info("")
-        logger.logger.info("Session Summary:")
-        logger.logger.info(f"  • Market analyses: {bot.performance_metrics['total_analyses']}")
-        logger.logger.info(f"  • Trading signals: {bot.performance_metrics['total_signals']}")
-        logger.logger.info(f"  • Trades executed: {bot.performance_metrics['executed_signals']}")
+    if hasattr(bot, 'performance_metrics'):
+        total_analyses = bot.performance_metrics.get('total_analyses', 0)
+        if total_analyses > 0:
+            logger.logger.info("")
+            logger.logger.info("Session Summary:")
+            logger.logger.info(f"  • Market analyses: {total_analyses}")
+            logger.logger.info(f"  • Trading signals: {bot.performance_metrics.get('total_signals', 0)}")
+            logger.logger.info(f"  • Trades executed: {bot.performance_metrics.get('executed_signals', 0)}")
 
-        if bot.performance_metrics['total_signals'] > 0:
-            exec_rate = bot.performance_metrics['executed_signals'] / bot.performance_metrics['total_signals'] * 100
-            logger.logger.info(f"  • Execution rate: {exec_rate:.1f}%")
+            total_signals = bot.performance_metrics.get('total_signals', 0)
+            if total_signals > 0:
+                executed_signals = bot.performance_metrics.get('executed_signals', 0)
+                exec_rate = executed_signals / total_signals * 100
+                logger.logger.info(f"  • Execution rate: {exec_rate:.1f}%")
 
     logger.logger.info("=" * 80)
     logger.logger.info("Thank you for using Advanced Paper Trading Bot v3.0!")
