@@ -1,6 +1,7 @@
-﻿"""
+﻿# src/bots/advanced_paper_bot.py
+"""
 Продвинутый Paper Trading Bot с реальными данными Binance и ML стратегиями
-ИСПРАВЛЕНО: Проблемы с застрявшими данными RSI, кешированием и диагностикой
+ВЕРСИЯ: Агрессивная торговля с оптимизированными параметрами
 """
 import asyncio
 import pandas as pd
@@ -25,17 +26,23 @@ class AdvancedPaperTradingBot:
     """Продвинутый бот с ML, риск-менеджментом и реальными данными"""
 
     def __init__(
-        self,
-        initial_balance: float = 10000.0,
-        maker_fee: float = 0.001,
-        taker_fee: float = 0.001,
-        slippage_bps: float = 5.0
+            self,
+            initial_balance: float = 10000.0,
+            maker_fee: float = 0.001,
+            taker_fee: float = 0.001,
+            slippage_bps: float = 5.0
     ):
         self.initial_balance = initial_balance
         self.current_balance = initial_balance
         self.maker_fee = maker_fee
         self.taker_fee = taker_fee
         self.slippage_bps = slippage_bps
+
+        # АГРЕССИВНЫЙ РЕЖИМ ДЛЯ АКТИВНОЙ ТОРГОВЛИ
+        self.aggressive_mode = True
+        self.position_percent = 0.10  # 10% от баланса на позицию (увеличено с 5%)
+        self.min_confidence = 0.40  # Снижен порог уверенности (было 0.55)
+        self.min_signals_required = 1.2  # Снижено требование к сигналам (было 2.0)
 
         # Компоненты системы
         self.binance_client = None
@@ -58,11 +65,12 @@ class AdvancedPaperTradingBot:
         self.last_data_update = {}
         self.data_update_interval = 30  # секунд
         self.last_rsi_values = {}  # Для отслеживания изменений RSI
+        self.data_fetch_failures = {}  # Счетчик неудачных попыток получения данных
+        self.last_trade_time = {}  # Время последней сделки по символу
 
-        # Альтернативные таймфреймы для fallback
+        # НЕ используем альтернативные таймфреймы - всегда основной
         self.primary_timeframe = settings.trading.PRIMARY_TIMEFRAME
-        self.fallback_timeframes = ['15m', '30m', '1h']
-        self.current_timeframes = {}
+        self.use_fallback_timeframes = False  # Отключаем переключение таймфреймов
 
         # Флаги состояния
         self.running = False
@@ -75,38 +83,43 @@ class AdvancedPaperTradingBot:
             'executed_signals': 0,
             'hold_signals': 0,
             'skipped_low_volatility': 0,
-            'skipped_time_limit': 0
+            'skipped_time_limit': 0,
+            'skipped_low_confidence': 0,
+            'skipped_insufficient_data': 0,
+            'skipped_position_exists': 0
         }
 
     def get_adaptive_volatility_threshold(self, symbol: str) -> float:
         """
         Возвращает адаптивный порог волатильности для символа
 
-        Args:
-            symbol: Торговый символ (например, BTCUSDT)
-
-        Returns:
-            Порог волатильности в процентах (например, 0.015 = 1.5%)
+        В агрессивном режиме пороги снижены для большей активности
         """
-        volatility_thresholds = {
+        base_thresholds = {
             'BTCUSDT': 0.015,  # 1.5% для BTC
             'ETHUSDT': 0.020,  # 2.0% для ETH
             'SOLUSDT': 0.025,  # 2.5% для SOL
             'DOGEUSDT': 0.030,  # 3.0% для DOGE
             'AVAXUSDT': 0.025,  # 2.5% для AVAX
-            'BNBUSDT': 0.018,   # 1.8% для BNB
-            'ADAUSDT': 0.022,   # 2.2% для ADA
-            'XRPUSDT': 0.023,   # 2.3% для XRP
-            'MATICUSDT': 0.028, # 2.8% для MATIC
-            'DOTUSDT': 0.024,   # 2.4% для DOT
+            'BNBUSDT': 0.018,  # 1.8% для BNB
+            'ADAUSDT': 0.022,  # 2.2% для ADA
+            'XRPUSDT': 0.023,  # 2.3% для XRP
+            'MATICUSDT': 0.028,  # 2.8% для MATIC
+            'DOTUSDT': 0.024,  # 2.4% для DOT
         }
 
-        return volatility_thresholds.get(symbol, 0.020)
+        threshold = base_thresholds.get(symbol, 0.020)
+
+        # В агрессивном режиме снижаем пороги на 30%
+        if self.aggressive_mode:
+            threshold *= 0.7
+
+        return threshold
 
     async def initialize(self):
         """Полная инициализация бота"""
         try:
-            logger.logger.info("Initializing Advanced Paper Trading Bot")
+            logger.logger.info("Initializing Advanced Paper Trading Bot (AGGRESSIVE MODE)")
 
             # 1. Подключение к Binance API
             await self._connect_binance()
@@ -124,7 +137,8 @@ class AdvancedPaperTradingBot:
                 f"Advanced Paper Trading Bot initialized | "
                 f"Initial balance: ${self.initial_balance:,.2f} | "
                 f"Symbols: {settings.trading.SYMBOLS[:3]} | "
-                f"Timeframe: {settings.trading.PRIMARY_TIMEFRAME}"
+                f"Timeframe: {settings.trading.PRIMARY_TIMEFRAME} | "
+                f"Mode: {'AGGRESSIVE' if self.aggressive_mode else 'NORMAL'}"
             )
 
         except Exception as e:
@@ -175,7 +189,7 @@ class AdvancedPaperTradingBot:
                 # Загружаем данные для основного таймфрейма
                 df = await self.data_collector.fetch_historical_data(
                     symbol=symbol,
-                    interval=settings.trading.PRIMARY_TIMEFRAME,
+                    interval=self.primary_timeframe,
                     days_back=1,
                     limit=100,
                     force_refresh=True
@@ -184,6 +198,8 @@ class AdvancedPaperTradingBot:
                 if not df.empty:
                     self.market_data[symbol] = df
                     self.last_data_update[symbol] = datetime.utcnow()
+                    self.data_fetch_failures[symbol] = 0
+                    self.last_trade_time[symbol] = datetime.utcnow() - timedelta(hours=1)  # Разрешаем сразу торговать
 
                     # Сохраняем последние индикаторы
                     self.indicators[symbol] = {
@@ -205,9 +221,11 @@ class AdvancedPaperTradingBot:
                     )
                 else:
                     logger.logger.warning(f"No data loaded for {symbol}")
+                    self.data_fetch_failures[symbol] = 1
 
             except Exception as e:
                 logger.logger.warning(f"Failed to load data for {symbol}: {e}")
+                self.data_fetch_failures[symbol] = 1
 
     async def _initialize_ml(self):
         """Инициализация ML моделей"""
@@ -239,7 +257,7 @@ class AdvancedPaperTradingBot:
             # Подписываемся на стримы свечей
             await ws_client.subscribe_klines(
                 symbols=settings.trading.SYMBOLS[:3],
-                intervals=[settings.trading.PRIMARY_TIMEFRAME],
+                intervals=[self.primary_timeframe],
                 handler=self._handle_kline_update
             )
 
@@ -257,90 +275,15 @@ class AdvancedPaperTradingBot:
         except Exception as e:
             logger.logger.error(f"Failed to start websocket streams: {e}")
             # Fallback на REST API
+            self.running = True
             asyncio.create_task(self._poll_market_data())
 
-    async def _get_fresh_data_with_fallback(self, symbol: str) -> pd.DataFrame:
-        """
-        Получение данных с автоматическим переключением таймфрейма при застревании
-        """
-        # Инициализируем текущий таймфрейм если его нет
-        if symbol not in self.current_timeframes:
-            self.current_timeframes[symbol] = self.primary_timeframe
-
-        # Пробуем получить данные с текущего таймфрейма
-        current_tf = self.current_timeframes[symbol]
-
-        try:
-            df = await self.data_collector.fetch_historical_data(
-                symbol=symbol,
-                interval=current_tf,
-                days_back=1,
-                limit=100,
-                force_refresh=True
-            )
-
-            # Если данные есть и RSI обновляется, используем их
-            if not df.empty and 'rsi' in df.columns:
-                # Проверяем что RSI действительно меняется
-                if symbol in self.last_rsi_values:
-                    current_rsi = df['rsi'].iloc[-1]
-                    if abs(current_rsi - self.last_rsi_values[symbol]) > 0.01:
-                        return df  # RSI меняется, данные хорошие
-                else:
-                    return df  # Первый запуск
-
-        except Exception as e:
-            logger.logger.warning(f"Failed to get data for {symbol} on {current_tf}: {e}")
-
-        # Если данные застряли, пробуем другие таймфреймы
-        logger.logger.info(f"Trying alternative timeframes for {symbol}")
-
-        for fallback_tf in self.fallback_timeframes:
-            if fallback_tf == current_tf:
-                continue
-
-            try:
-                logger.logger.info(f"Switching {symbol} to {fallback_tf} timeframe")
-
-                df = await self.data_collector.fetch_historical_data(
-                    symbol=symbol,
-                    interval=fallback_tf,
-                    days_back=1,
-                    limit=100,
-                    force_refresh=True
-                )
-
-                if not df.empty and 'rsi' in df.columns:
-                    # Проверяем что RSI действительно меняется
-                    if len(df) > 2:
-                        rsi_values = df['rsi'].tail(3).values
-                        if len(set(rsi_values)) > 1:  # RSI меняется
-                            self.current_timeframes[symbol] = fallback_tf
-                            logger.logger.info(
-                                f"✅ Successfully switched {symbol} to {fallback_tf} timeframe"
-                            )
-                            return df
-
-            except Exception as e:
-                logger.logger.debug(f"Failed {fallback_tf} for {symbol}: {e}")
-                continue
-
-        # Если все таймфреймы не работают, возвращаемся к основному
-        logger.logger.warning(f"All timeframes failed for {symbol}, using primary")
-        self.current_timeframes[symbol] = self.primary_timeframe
-
-        # Возвращаем последние известные данные или пустой DataFrame
-        if symbol in self.market_data:
-            return self.market_data[symbol]
-        return pd.DataFrame()
-
     async def _poll_market_data(self):
-        """Альтернативный метод обновления данных через REST API - С ПОЛНОЙ ДИАГНОСТИКОЙ"""
+        """Альтернативный метод обновления данных через REST API - ФИКСИРОВАННЫЙ"""
         logger.logger.info("Starting REST API polling for market data")
 
-        poll_interval = 10  # Увеличен интервал до 10 секунд
-        consecutive_stuck_counts = {}
-        last_candle_times = {}
+        poll_interval = 10  # секунд между обновлениями данных
+        consecutive_failures = {}
 
         while self.running:
             try:
@@ -349,37 +292,12 @@ class AdvancedPaperTradingBot:
                         now = datetime.utcnow()
 
                         # Инициализируем счетчик если его нет
-                        if symbol not in consecutive_stuck_counts:
-                            consecutive_stuck_counts[symbol] = 0
-
-                        logger.logger.debug(f"Updating data for {symbol}")
+                        if symbol not in consecutive_failures:
+                            consecutive_failures[symbol] = 0
 
                         # Получаем текущую цену
                         ticker = await self.binance_client.get_ticker(symbol=symbol)
                         current_price = float(ticker['lastPrice'])
-                        price_change_percent = float(ticker.get('priceChangePercent', 0))
-
-                        # ДИАГНОСТИКА: Проверяем время последней свечи
-                        try:
-                            klines = await self.binance_client.get_klines(
-                                symbol=symbol,
-                                interval=settings.trading.PRIMARY_TIMEFRAME,
-                                limit=2
-                            )
-
-                            if klines:
-                                last_candle_time = klines[-1][0]
-
-                                if symbol in last_candle_times:
-                                    if last_candle_time == last_candle_times[symbol]:
-                                        logger.logger.debug(f"Candle time unchanged for {symbol}")
-                                    else:
-                                        logger.logger.debug(f"New candle for {symbol}")
-                                        consecutive_stuck_counts[symbol] = 0  # Сбрасываем счетчик
-
-                                last_candle_times[symbol] = last_candle_time
-                        except Exception as e:
-                            logger.logger.debug(f"Failed to check candle time: {e}")
 
                         # Очистка кешей
                         try:
@@ -393,68 +311,66 @@ class AdvancedPaperTradingBot:
                         self.data_collector.force_refresh = True
                         self.data_collector.use_cache = False
 
-                        # Получаем данные с fallback на другие таймфреймы
-                        df = await self._get_fresh_data_with_fallback(symbol)
+                        # ВАЖНО: Используем ТОЛЬКО основной таймфрейм
+                        df = await self.data_collector.fetch_historical_data(
+                            symbol=symbol,
+                            interval=self.primary_timeframe,
+                            days_back=1,
+                            limit=100,
+                            force_refresh=True
+                        )
 
-                        if not df.empty:
+                        if not df.empty and 'rsi' in df.columns:
                             # Сохраняем старые значения для сравнения
-                            old_rsi = self.indicators.get(symbol, {}).get('rsi', 0)
+                            old_rsi = self.indicators.get(symbol, {}).get('rsi', 50)
                             old_price = self.indicators.get(symbol, {}).get('price', 0)
 
                             # Обновляем данные
                             self.market_data[symbol] = df
                             self.last_data_update[symbol] = now
+                            consecutive_failures[symbol] = 0
 
                             # Обновляем индикаторы
-                            new_rsi = df['rsi'].iloc[-1] if 'rsi' in df.columns else 50
+                            new_rsi = df['rsi'].iloc[-1] if not pd.isna(df['rsi'].iloc[-1]) else 50
 
-                            # Если RSI все еще застрял, используем оценку на основе изменения цены
-                            if symbol in self.last_rsi_values:
-                                rsi_change = abs(new_rsi - self.last_rsi_values[symbol])
-
-                                if rsi_change < 0.01:
-                                    consecutive_stuck_counts[symbol] += 1
-
-                                    if consecutive_stuck_counts[symbol] >= 3:
-                                        logger.logger.warning(
-                                            f"⚠️ RSI stuck for {symbol}: {new_rsi:.2f} "
-                                            f"(no change for {consecutive_stuck_counts[symbol]} polls)"
-                                        )
-
-                                        # Оцениваем RSI на основе изменения цены за 24ч
-                                        if consecutive_stuck_counts[symbol] >= 5:
-                                            estimated_rsi = 50 + (price_change_percent * 1.5)
-                                            estimated_rsi = max(0, min(100, estimated_rsi))
-                                            new_rsi = estimated_rsi
-                                            logger.logger.info(
-                                                f"Using estimated RSI for {symbol}: {new_rsi:.1f} "
-                                                f"(based on 24h change: {price_change_percent:.1f}%)"
-                                            )
-                                            consecutive_stuck_counts[symbol] = 0
-                                else:
-                                    consecutive_stuck_counts[symbol] = 0
-                                    logger.logger.info(
-                                        f"✅ Data updated for {symbol} | "
-                                        f"Price: ${old_price:.2f} → ${current_price:.2f} | "
-                                        f"RSI: {self.last_rsi_values[symbol]:.1f} → {new_rsi:.1f}"
-                                    )
-
-                            self.last_rsi_values[symbol] = new_rsi
-
-                            # Обновляем индикаторы
                             self.indicators[symbol] = {
                                 'rsi': new_rsi,
                                 'macd': df['macd'].iloc[-1] if 'macd' in df.columns else 0,
                                 'bb_position': df['bb_percent'].iloc[-1] if 'bb_percent' in df.columns else 0.5,
                                 'volume_ratio': df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 1,
-                                'atr': df['atr'].iloc[-1] if 'atr' in df.columns else 0,
-                                'price': current_price
+                                'atr': df['atr'].iloc[-1] if 'atr' in df.columns else current_price * 0.02,
+                                'price': current_price,
+                                'momentum_5': df['momentum_5'].iloc[-1] if 'momentum_5' in df.columns else 0,
+                                'ema_9': df['ema_9'].iloc[-1] if 'ema_9' in df.columns else current_price,
+                                'ema_20': df['ema_20'].iloc[-1] if 'ema_20' in df.columns else current_price,
+                                'volatility': df['volatility'].iloc[-1] if 'volatility' in df.columns else 0.01
                             }
+
+                            # Логируем изменения
+                            if abs(new_rsi - old_rsi) > 0.1 or abs(current_price - old_price) > 0.01:
+                                logger.logger.info(
+                                    f"✅ Data updated for {symbol} | "
+                                    f"Price: ${old_price:.2f} → ${current_price:.2f} | "
+                                    f"RSI: {old_rsi:.1f} → {new_rsi:.1f}"
+                                )
+
+                            self.last_rsi_values[symbol] = new_rsi
+
                         else:
-                            logger.logger.warning(f"Empty dataframe received for {symbol}")
+                            consecutive_failures[symbol] += 1
+                            logger.logger.warning(
+                                f"Failed to get valid data for {symbol} (attempt {consecutive_failures[symbol]})")
+
+                            # Если много неудач подряд, используем последние известные данные
+                            if consecutive_failures[symbol] > 3 and symbol in self.market_data:
+                                logger.logger.info(f"Using last known data for {symbol}")
+                                # Обновляем только цену
+                                if symbol in self.indicators:
+                                    self.indicators[symbol]['price'] = current_price
 
                     except Exception as e:
                         logger.logger.error(f"Failed to poll data for {symbol}: {e}")
+                        consecutive_failures[symbol] = consecutive_failures.get(symbol, 0) + 1
 
                 # Ждём перед следующим обновлением
                 await asyncio.sleep(poll_interval)
@@ -504,8 +420,14 @@ class AdvancedPaperTradingBot:
             if deleted > 0:
                 logger.logger.debug(f"Cleared {deleted} cache keys for {symbol}")
 
-            # Получаем свежие данные
-            df = await self._get_fresh_data_with_fallback(symbol)
+            # Получаем свежие данные ТОЛЬКО для основного таймфрейма
+            df = await self.data_collector.fetch_historical_data(
+                symbol=symbol,
+                interval=self.primary_timeframe,
+                days_back=1,
+                limit=100,
+                force_refresh=True
+            )
 
             if not df.empty:
                 self.market_data[symbol] = df
@@ -518,61 +440,91 @@ class AdvancedPaperTradingBot:
                     'bb_position': df['bb_percent'].iloc[-1] if 'bb_percent' in df.columns else 0.5,
                     'volume_ratio': df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 1,
                     'atr': df['atr'].iloc[-1] if 'atr' in df.columns else 0,
-                    'price': df['close'].iloc[-1]
+                    'price': df['close'].iloc[-1],
+                    'momentum_5': df['momentum_5'].iloc[-1] if 'momentum_5' in df.columns else 0,
+                    'ema_9': df['ema_9'].iloc[-1] if 'ema_9' in df.columns else df['close'].iloc[-1],
+                    'ema_20': df['ema_20'].iloc[-1] if 'ema_20' in df.columns else df['close'].iloc[-1],
+                    'volatility': df['volatility'].iloc[-1] if 'volatility' in df.columns else 0.01
                 }
 
         except Exception as e:
             logger.logger.error(f"Failed to update market data for {symbol}: {e}")
 
     async def run(self):
-        """Основной торговый цикл"""
+        """Основной торговый цикл с улучшенной обработкой ошибок"""
         self.running = True
-        logger.logger.info("Starting Advanced Paper Trading Bot main loop")
+        logger.logger.info("Starting Advanced Paper Trading Bot main loop (AGGRESSIVE MODE)")
 
         analysis_counter = 0
 
         try:
             while self.running:
-                # Анализируем рынок каждые 30 секунд
-                if analysis_counter % 6 == 0:  # 30 секунд (5 сек * 6)
-                    await self._analyze_and_trade()
+                try:
+                    # АГРЕССИВНЫЙ РЕЖИМ: Анализируем рынок каждые 15 секунд
+                    if analysis_counter % 3 == 0:  # 15 секунд (5 сек * 3)
+                        await self._analyze_and_trade()
 
-                # Обновляем позиции
-                await self._update_positions()
+                    # Обновляем позиции
+                    await self._update_positions()
 
-                # Проверяем риски
-                await self._check_risk_limits()
+                    # Проверяем риски
+                    await self._check_risk_limits()
 
-                # Логируем статус каждую минуту
-                if analysis_counter % 12 == 0:  # 60 секунд
-                    await self._log_status()
-                    analysis_counter = 0
+                    # Логируем статус каждую минуту
+                    if analysis_counter % 12 == 0:  # 60 секунд
+                        await self._log_status()
+                        analysis_counter = 0
 
-                analysis_counter += 1
-                await asyncio.sleep(5)
+                    analysis_counter += 1
+                    await asyncio.sleep(5)
+
+                except asyncio.CancelledError:
+                    logger.logger.info("Trading loop cancelled by user")
+                    break
+                except Exception as e:
+                    logger.logger.error(f"Error in trading iteration: {e}")
+                    # Продолжаем работу после ошибки
+                    await asyncio.sleep(5)
 
         except asyncio.CancelledError:
             logger.logger.info("Trading loop cancelled")
         except Exception as e:
-            logger.logger.error(f"Error in trading loop: {e}")
+            logger.logger.error(f"Critical error in trading loop: {e}")
             raise
         finally:
             logger.logger.info("Advanced Paper Trading Bot main loop stopped")
 
     async def _analyze_and_trade(self):
-        """Анализ рынка и принятие торговых решений"""
+        """Анализ рынка и принятие торговых решений с валидацией данных"""
         self.performance_metrics['total_analyses'] += 1
 
         for symbol in settings.trading.SYMBOLS[:3]:
             try:
-                # Пропускаем если нет данных
+                # Проверяем наличие и валидность данных
                 if symbol not in self.market_data:
                     logger.logger.debug(f"No market data for {symbol}")
+                    self.performance_metrics['skipped_insufficient_data'] += 1
                     continue
 
                 df = self.market_data[symbol]
-                if df.empty or len(df) < 50:
+
+                # ИСПРАВЛЕНИЕ: Более строгая проверка данных
+                if df.empty or len(df) < 20:  # Минимум 20 свечей для анализа
                     logger.logger.debug(f"Insufficient data for {symbol}: {len(df)} candles")
+                    self.performance_metrics['skipped_insufficient_data'] += 1
+                    continue
+
+                # Проверяем что индикаторы присутствуют и валидны
+                required_columns = ['close', 'volume', 'rsi']
+                if not all(col in df.columns for col in required_columns):
+                    logger.logger.warning(f"Missing required columns for {symbol}")
+                    self.performance_metrics['skipped_insufficient_data'] += 1
+                    continue
+
+                # Проверяем что RSI не все NaN
+                if df['rsi'].isna().all():
+                    logger.logger.warning(f"All RSI values are NaN for {symbol}")
+                    self.performance_metrics['skipped_insufficient_data'] += 1
                     continue
 
                 # Получаем текущие индикаторы
@@ -598,20 +550,28 @@ class AdvancedPaperTradingBot:
                         f"Reasons: {', '.join(signal['reasons'])}"
                     )
 
-                    # Проверяем уверенность сигнала
-                    if signal['confidence'] >= 0.55:
-                        await self._execute_trade(symbol, signal, current_price)
-                        self.performance_metrics['executed_signals'] += 1
+                    # АГРЕССИВНЫЙ РЕЖИМ: Сниженный порог уверенности
+                    if signal['confidence'] >= self.min_confidence:
+                        # Проверяем время последней сделки (минимум 5 минут между сделками)
+                        time_since_last_trade = (
+                                    datetime.utcnow() - self.last_trade_time.get(symbol, datetime.min)).total_seconds()
+                        if time_since_last_trade > 300:  # 5 минут
+                            await self._execute_trade(symbol, signal, current_price)
+                            self.performance_metrics['executed_signals'] += 1
+                        else:
+                            logger.logger.debug(f"Too soon after last trade for {symbol}: {time_since_last_trade:.0f}s")
+                            self.performance_metrics['skipped_time_limit'] += 1
                     else:
                         logger.logger.debug(
                             f"Signal confidence too low for {symbol}: {signal['confidence']:.2f}"
                         )
+                        self.performance_metrics['skipped_low_confidence'] += 1
 
             except Exception as e:
                 logger.logger.error(f"Analysis failed for {symbol}: {e}", exc_info=True)
 
     async def _generate_trading_signal(self, symbol: str, df: pd.DataFrame, indicators: Dict) -> Dict:
-        """Генерация торгового сигнала на основе множественных стратегий"""
+        """Генерация торгового сигнала на основе множественных стратегий (АГРЕССИВНАЯ ВЕРСИЯ)"""
         signal = {
             'action': 'HOLD',
             'confidence': 0.0,
@@ -623,46 +583,49 @@ class AdvancedPaperTradingBot:
         buy_signals = 0
         sell_signals = 0
 
-        # 1. RSI стратегия
+        # 1. RSI стратегия (АГРЕССИВНЫЕ УРОВНИ)
         rsi = indicators.get('rsi', 50)
-        if rsi < 35:  # Oversold
-            buy_signals += 1.5
-            signal['reasons'].append(f"RSI oversold ({rsi:.1f})")
-        elif rsi > 65:  # Overbought
-            sell_signals += 1.5
-            signal['reasons'].append(f"RSI overbought ({rsi:.1f})")
-        elif rsi < 45:  # Mild oversold
-            buy_signals += 0.7
-            signal['reasons'].append(f"RSI low ({rsi:.1f})")
-        elif rsi > 55:  # Mild overbought
-            sell_signals += 0.7
-            signal['reasons'].append(f"RSI high ({rsi:.1f})")
+        if not pd.isna(rsi):
+            if rsi < 35:  # Oversold (было 30)
+                buy_signals += 1.5
+                signal['reasons'].append(f"RSI oversold ({rsi:.1f})")
+            elif rsi > 65:  # Overbought (было 70)
+                sell_signals += 1.5
+                signal['reasons'].append(f"RSI overbought ({rsi:.1f})")
+            elif rsi < 45:  # Mild oversold (было 40)
+                buy_signals += 0.8
+                signal['reasons'].append(f"RSI low ({rsi:.1f})")
+            elif rsi > 55:  # Mild overbought (было 60)
+                sell_signals += 0.8
+                signal['reasons'].append(f"RSI high ({rsi:.1f})")
 
         # 2. MACD стратегия
         macd = indicators.get('macd', 0)
         if 'macd_signal' in df.columns and len(df) > 0:
             macd_signal_val = df['macd_signal'].iloc[-1]
-            macd_diff = macd - macd_signal_val
+            if not pd.isna(macd) and not pd.isna(macd_signal_val):
+                macd_diff = macd - macd_signal_val
 
-            if macd_diff > 0:
-                buy_signals += 0.8
-                signal['reasons'].append(f"MACD bullish ({macd_diff:.4f})")
-            elif macd_diff < 0:
-                sell_signals += 0.8
-                signal['reasons'].append(f"MACD bearish ({macd_diff:.4f})")
+                if macd_diff > 0:
+                    buy_signals += 0.8
+                    signal['reasons'].append(f"MACD bullish ({macd_diff:.4f})")
+                elif macd_diff < 0:
+                    sell_signals += 0.8
+                    signal['reasons'].append(f"MACD bearish ({macd_diff:.4f})")
 
         # 3. Bollinger Bands стратегия
         bb_position = indicators.get('bb_position', 0.5)
-        if bb_position < 0.2:  # Near lower band
-            buy_signals += 1.0
-            signal['reasons'].append(f"Price near lower BB ({bb_position:.2f})")
-        elif bb_position > 0.8:  # Near upper band
-            sell_signals += 1.0
-            signal['reasons'].append(f"Price near upper BB ({bb_position:.2f})")
+        if not pd.isna(bb_position):
+            if bb_position < 0.25:  # Near lower band (было 0.2)
+                buy_signals += 1.0
+                signal['reasons'].append(f"Price near lower BB ({bb_position:.2f})")
+            elif bb_position > 0.75:  # Near upper band (было 0.8)
+                sell_signals += 1.0
+                signal['reasons'].append(f"Price near upper BB ({bb_position:.2f})")
 
         # 4. Volume подтверждение
         volume_ratio = indicators.get('volume_ratio', 1)
-        if volume_ratio > 1.5:  # High volume
+        if volume_ratio > 1.3:  # High volume (снижено с 1.5)
             if buy_signals > sell_signals:
                 buy_signals += 0.5
                 signal['reasons'].append(f"High volume confirmation ({volume_ratio:.1f}x)")
@@ -675,56 +638,87 @@ class AdvancedPaperTradingBot:
             if hasattr(ml_engine, 'is_trained') and ml_engine.is_trained:
                 ml_prediction = await ml_engine.predict(df, return_proba=True)
                 if ml_prediction and 'prediction_label' in ml_prediction:
-                    if ml_prediction['prediction_label'] == 'UP' and ml_prediction.get('confidence', 0) > 0.55:
-                        buy_signals += 1.5
+                    if ml_prediction['prediction_label'] == 'UP' and ml_prediction.get('confidence', 0) > 0.50:
+                        buy_signals += 1.2
                         signal['reasons'].append(f"ML: UP ({ml_prediction['confidence']:.1%})")
-                    elif ml_prediction['prediction_label'] == 'DOWN' and ml_prediction.get('confidence', 0) > 0.55:
-                        sell_signals += 1.5
+                    elif ml_prediction['prediction_label'] == 'DOWN' and ml_prediction.get('confidence', 0) > 0.50:
+                        sell_signals += 1.2
                         signal['reasons'].append(f"ML: DOWN ({ml_prediction['confidence']:.1%})")
         except Exception as e:
             logger.logger.debug(f"ML prediction skipped: {e}")
 
-        # Определяем финальное действие
-        min_signals_required = 1.2  # Минимум сигналов для действия
+        # 6. Momentum стратегия (НОВАЯ)
+        momentum = indicators.get('momentum_5', 0)
+        if momentum > 0.01:  # Рост больше 1%
+            buy_signals += 0.5
+            signal['reasons'].append(f"Positive momentum ({momentum:.2%})")
+        elif momentum < -0.01:  # Падение больше 1%
+            sell_signals += 0.5
+            signal['reasons'].append(f"Negative momentum ({momentum:.2%})")
+
+        # 7. EMA crossover (НОВАЯ)
+        ema_short = indicators.get('ema_9', 0)
+        ema_long = indicators.get('ema_20', 0)
+        if ema_short > 0 and ema_long > 0:
+            if ema_short > ema_long:
+                buy_signals += 0.3
+                signal['reasons'].append("EMA bullish crossover")
+            else:
+                sell_signals += 0.3
+                signal['reasons'].append("EMA bearish crossover")
+
+        # 8. Volatility bonus в агрессивном режиме
+        if self.aggressive_mode:
+            volatility = indicators.get('volatility', 0)
+            if volatility > 0.015:  # Высокая волатильность
+                if buy_signals > sell_signals:
+                    buy_signals += 0.4
+                    signal['reasons'].append(f"High volatility bonus ({volatility:.3f})")
+                elif sell_signals > buy_signals:
+                    sell_signals += 0.4
+                    signal['reasons'].append(f"High volatility bonus ({volatility:.3f})")
+
+        # Определяем финальное действие (СНИЖЕННЫЕ ТРЕБОВАНИЯ)
+        min_signals_required = self.min_signals_required  # 1.2 в агрессивном режиме
 
         if buy_signals >= min_signals_required and buy_signals > sell_signals:
             signal['action'] = 'BUY'
-            signal['confidence'] = min(buy_signals / 4.0, 0.85)
+            signal['confidence'] = min(buy_signals / 4.0, 0.90)
 
-            # Рассчитываем стоп-лосс и тейк-профит
+            # Рассчитываем стоп-лосс и тейк-профит (БОЛЕЕ БЛИЗКИЕ УРОВНИ)
             atr = indicators.get('atr', df['close'].iloc[-1] * 0.02)
-            signal['stop_loss'] = df['close'].iloc[-1] - (atr * 1.5)
-            signal['take_profit'] = df['close'].iloc[-1] + (atr * 2.5)
+            signal['stop_loss'] = df['close'].iloc[-1] - (atr * 1.0)  # Было 2.0
+            signal['take_profit'] = df['close'].iloc[-1] + (atr * 1.5)  # Было 3.0
 
         elif sell_signals >= min_signals_required and sell_signals > buy_signals:
             signal['action'] = 'SELL'
-            signal['confidence'] = min(sell_signals / 4.0, 0.85)
+            signal['confidence'] = min(sell_signals / 4.0, 0.90)
 
             atr = indicators.get('atr', df['close'].iloc[-1] * 0.02)
-            signal['stop_loss'] = df['close'].iloc[-1] + (atr * 1.5)
-            signal['take_profit'] = df['close'].iloc[-1] - (atr * 2.5)
+            signal['stop_loss'] = df['close'].iloc[-1] + (atr * 1.0)  # Было 2.0
+            signal['take_profit'] = df['close'].iloc[-1] - (atr * 1.5)  # Было 3.0
 
         return signal
 
     async def _execute_trade(self, symbol: str, signal: Dict, current_price: float):
-        """Выполнение торговой операции"""
+        """Выполнение торговой операции с исправленным учетом баланса"""
         try:
             # Проверяем, есть ли уже позиция по этому символу
             if symbol in self.positions:
                 logger.logger.info(f"Position already exists for {symbol}")
+                self.performance_metrics['skipped_position_exists'] += 1
                 return
 
-            # Расчет размера позиции
-            position_percent = 0.2  # 20% от баланса на позицию
-            position_value = self.current_balance * position_percent
+            # Расчет размера позиции (УВЕЛИЧЕННЫЙ)
+            position_value = self.current_balance * self.position_percent
 
-            # Минимальный размер позиции для Binance
+            # Минимальный размер позиции для Binance (СНИЖЕННЫЙ)
             min_position_values = {
-                'BTCUSDT': 10.0,
-                'ETHUSDT': 10.0,
-                'BNBUSDT': 10.0,
-                'SOLUSDT': 10.0,
-                'default': 10.0
+                'BTCUSDT': 5.0,  # Снижено с 10
+                'ETHUSDT': 5.0,
+                'BNBUSDT': 5.0,
+                'SOLUSDT': 5.0,
+                'default': 5.0
             }
 
             min_value = min_position_values.get(symbol, min_position_values['default'])
@@ -757,19 +751,23 @@ class AdvancedPaperTradingBot:
                 position_size = (min_value * 1.1) / current_price
                 position_size = round(position_size / step_size) * step_size
 
+            # ИСПРАВЛЕНИЕ: Правильная проверка баланса
+            position_cost = position_size * current_price
+            fee = position_cost * self.taker_fee
+            total_required = position_cost + fee
+
             # Проверяем достаточность баланса
-            required_balance = position_size * current_price * 1.01
-            if required_balance > self.current_balance:
+            if total_required > self.current_balance * 0.95:  # Оставляем 5% резерв
                 logger.logger.warning(
                     f"Insufficient balance for {symbol}: "
-                    f"Required ${required_balance:.2f} > Available ${self.current_balance:.2f}"
+                    f"Required ${total_required:.2f} > Available ${self.current_balance * 0.95:.2f}"
                 )
                 return
 
             # Проверяем с риск-менеджером
             can_open, reason = self.risk_manager.can_open_position(
                 symbol=symbol,
-                proposed_size=position_size * current_price
+                proposed_size=position_cost
             )
 
             if not can_open:
@@ -782,6 +780,10 @@ class AdvancedPaperTradingBot:
                 entry_price = current_price * (1 + slippage)
             else:
                 entry_price = current_price * (1 - slippage)
+
+            # Пересчитываем с учетом слиппажа
+            position_cost = position_size * entry_price
+            fee = position_cost * self.taker_fee
 
             # Создаём позицию
             position = Position(
@@ -801,10 +803,12 @@ class AdvancedPaperTradingBot:
             self.positions[symbol] = position
             self.risk_manager.add_position(position)
 
-            # Вычитаем из баланса стоимость позиции и комиссию
-            position_cost = position_size * entry_price
-            fee = position_cost * self.taker_fee
+            # ИСПРАВЛЕНИЕ: Правильный учет баланса для всех типов позиций
+            # Для paper trading вычитаем стоимость позиции из баланса
             self.current_balance -= (position_cost + fee)
+
+            # Обновляем время последней сделки
+            self.last_trade_time[symbol] = datetime.utcnow()
 
             # Логируем сделку
             logger.logger.info(
@@ -821,6 +825,16 @@ class AdvancedPaperTradingBot:
                 f"Reasons: {', '.join(signal['reasons'])}"
             )
 
+            # Логируем торговое событие
+            logger.log_trade(
+                action="open",
+                symbol=symbol,
+                side=signal['action'],
+                price=entry_price,
+                quantity=position_size,
+                pnl=0
+            )
+
         except Exception as e:
             logger.logger.error(f"Failed to execute trade for {symbol}: {e}", exc_info=True)
 
@@ -833,9 +847,13 @@ class AdvancedPaperTradingBot:
 
                 # Если нет цены в индикаторах, запрашиваем напрямую
                 if not current_price or abs(current_price - position.current_price) < 0.01:
-                    ticker = await self.binance_client.get_ticker(symbol=symbol)
-                    current_price = float(ticker['lastPrice'])
-                    logger.logger.debug(f"Fetched fresh price for {symbol}: ${current_price:.2f}")
+                    try:
+                        ticker = await self.binance_client.get_ticker(symbol=symbol)
+                        current_price = float(ticker['lastPrice'])
+                        logger.logger.debug(f"Fetched fresh price for {symbol}: ${current_price:.2f}")
+                    except Exception as e:
+                        logger.logger.debug(f"Failed to fetch price for {symbol}: {e}")
+                        continue
 
                 # Обновляем P&L позиции
                 await self._update_position_pnl(symbol, current_price)
@@ -863,20 +881,29 @@ class AdvancedPaperTradingBot:
 
         # Рассчитываем P&L
         if position.side == 'BUY':
-            pnl = (close_price - position.entry_price) * position.quantity
+            # Для длинной позиции: прибыль = (цена закрытия - цена входа) * количество
+            gross_pnl = (close_price - position.entry_price) * position.quantity
+            # Возвращаем выручку от продажи
+            proceeds = position.quantity * close_price
         else:  # SELL
-            pnl = (position.entry_price - close_price) * position.quantity
+            # Для короткой позиции: прибыль = (цена входа - цена закрытия) * количество
+            gross_pnl = (position.entry_price - close_price) * position.quantity
+            # Возвращаем изначальную стоимость позиции + прибыль
+            proceeds = position.quantity * position.entry_price + gross_pnl
 
         # Вычитаем комиссию за закрытие
         fee = position.quantity * close_price * self.taker_fee
-        pnl -= fee
+        net_pnl = gross_pnl - fee
 
-        # Обновление баланса
+        # ИСПРАВЛЕНИЕ: Правильное обновление баланса
+        # Возвращаем средства на баланс с учетом P&L и комиссии
         if position.side == 'BUY':
-            self.current_balance += (position.quantity * close_price - fee)
+            # Для лонга: возвращаем выручку минус комиссия
+            self.current_balance += (proceeds - fee)
         else:  # SELL
-            entry_value = position.quantity * position.entry_price
-            self.current_balance += entry_value + pnl
+            # Для шорта: возвращаем изначальные средства + чистую прибыль/убыток
+            initial_cost = position.quantity * position.entry_price
+            self.current_balance += initial_cost + net_pnl
 
         # Закрываем в риск-менеджере
         self.risk_manager.close_position(position.id, close_price, reason)
@@ -891,17 +918,27 @@ class AdvancedPaperTradingBot:
             'entry_price': position.entry_price,
             'close_price': close_price,
             'quantity': position.quantity,
-            'pnl': pnl,
+            'pnl': net_pnl,
             'reason': reason,
             'timestamp': datetime.utcnow()
         })
 
         # Логируем закрытие
-        pnl_emoji = "💰" if pnl > 0 else "💸"
+        pnl_emoji = "💰" if net_pnl > 0 else "💸"
         logger.logger.info(
             f"{pnl_emoji} POSITION CLOSED | Symbol: {symbol} | "
             f"Side: {position.side} | Close: ${close_price:.2f} | "
-            f"PnL: ${pnl:+.2f} | Reason: {reason}"
+            f"PnL: ${net_pnl:+.2f} | Reason: {reason}"
+        )
+
+        # Логируем торговое событие
+        logger.log_trade(
+            action="close",
+            symbol=symbol,
+            side=position.side,
+            price=close_price,
+            quantity=position.quantity,
+            pnl=net_pnl
         )
 
     async def _update_position_pnl(self, symbol: str, current_price: float):
@@ -962,7 +999,8 @@ class AdvancedPaperTradingBot:
             }
 
             logger.logger.info(
-                f"📈 Bot Status | Equity: ${status['equity']:.2f} | "
+                f"📈 Bot Status | Mode: {'AGGRESSIVE' if self.aggressive_mode else 'NORMAL'} | "
+                f"Equity: ${status['equity']:.2f} | "
                 f"Free Balance: ${status['balance']:.2f} | "
                 f"In Positions: ${status['positions_value']:.2f} | "
                 f"Positions: {status['positions']} | Trades: {status['trades']} | "
@@ -982,6 +1020,21 @@ class AdvancedPaperTradingBot:
                         f"Entry: ${position.entry_price:.2f} | Current: ${position.current_price:.2f} | "
                         f"PnL: ${position.unrealized_pnl:.2f} ({pnl_percent:.2f}%)"
                     )
+
+            # Логируем метрики производительности
+            if self.performance_metrics['total_analyses'] > 0:
+                logger.logger.debug(
+                    f"Performance Metrics | "
+                    f"Analyses: {self.performance_metrics['total_analyses']} | "
+                    f"Signals: {self.performance_metrics['total_signals']} | "
+                    f"Executed: {self.performance_metrics['executed_signals']} | "
+                    f"Hold: {self.performance_metrics['hold_signals']} | "
+                    f"Skipped (confidence): {self.performance_metrics['skipped_low_confidence']} | "
+                    f"Skipped (data): {self.performance_metrics['skipped_insufficient_data']} | "
+                    f"Skipped (position): {self.performance_metrics['skipped_position_exists']} | "
+                    f"Skipped (time): {self.performance_metrics['skipped_time_limit']}"
+                )
+
         except Exception as e:
             logger.logger.error(f"Error logging status: {e}")
 
@@ -1024,6 +1077,14 @@ class AdvancedPaperTradingBot:
                 )
             else:
                 logger.logger.info("No trades executed")
+
+            # Финальные метрики производительности
+            logger.logger.info(
+                f"Session Performance | "
+                f"Total Analyses: {self.performance_metrics['total_analyses']} | "
+                f"Total Signals: {self.performance_metrics['total_signals']} | "
+                f"Execution Rate: {self.performance_metrics['executed_signals'] / max(1, self.performance_metrics['total_signals']) * 100:.1f}%"
+            )
 
         except Exception as e:
             logger.logger.error(f"Error stopping bot: {e}")

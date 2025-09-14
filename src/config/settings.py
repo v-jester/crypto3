@@ -109,7 +109,7 @@ class TradingSettings(BaseSettings):
     # Основные параметры
     INITIAL_CAPITAL: PositiveFloat = 10000.0
     RISK_PER_TRADE: PositiveFloat = Field(
-        default=0.01,
+        default=0.02,
         ge=0.001,
         le=0.05,
         description="Риск на сделку (1-5%)"
@@ -196,9 +196,9 @@ class MLSettings(BaseSettings):
 class SignalSettings(BaseSettings):
     """Настройки генерации сигналов"""
     # RSI
-    RSI_PERIOD: int = 7
-    RSI_OVERSOLD: float = 35.0
-    RSI_OVERBOUGHT: float = 65.0
+    RSI_PERIOD: int = 14
+    RSI_OVERSOLD: float = 40.0
+    RSI_OVERBOUGHT: float = 60.0
 
     # MACD (Linda Raschke settings)
     MACD_FAST: int = 3
