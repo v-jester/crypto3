@@ -1,6 +1,6 @@
 # run_backtest_improved.py
 """
-Улучшенная версия с детальным выводом результатов
+Improved version with detailed output of results - Fixed encoding issues
 """
 import os
 import sys
@@ -15,21 +15,21 @@ from src.config.settings import settings
 
 def run_freqtrade_backtest():
     """
-    Запуск бэктеста с полным выводом результатов
+    Run backtest with full output of results
     """
     freqtrade_path = Path("C:/freqtrade-nfi")
 
-    # PowerShell команда с выводом результатов
-    ps_script = """
+    # PowerShell command with output results - using raw strings to avoid escape issues
+    ps_script = r"""
 $ErrorActionPreference = "Continue"
 Set-Location "C:\freqtrade-nfi"
 & .\venv\Scripts\Activate.ps1
 
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "ЗАПУСК БЭКТЕСТА" -ForegroundColor Yellow
+Write-Host "STARTING BACKTEST" -ForegroundColor Yellow
 Write-Host "========================================`n" -ForegroundColor Cyan
 
-# Запуск бэктеста
+# Run backtest
 freqtrade backtesting `
     --userdir ft_userdata `
     --strategy AdvancedCryptoStrategy `
@@ -37,39 +37,39 @@ freqtrade backtesting `
     --enable-position-stacking `
     --max-open-trades 5
 
-# Показ результатов
+# Show results
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "ДЕТАЛЬНЫЕ РЕЗУЛЬТАТЫ" -ForegroundColor Yellow
+Write-Host "DETAILED RESULTS" -ForegroundColor Yellow
 Write-Host "========================================`n" -ForegroundColor Cyan
 
 freqtrade backtesting-show --userdir ft_userdata
 
-# Если есть результаты, показываем статистику
+# If results exist, show statistics
 $results_file = "ft_userdata\backtest_results\.last_result.json"
 if (Test-Path $results_file) {
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "АНАЛИЗ РЕЗУЛЬТАТОВ" -ForegroundColor Yellow
+    Write-Host "RESULTS ANALYSIS" -ForegroundColor Yellow
     Write-Host "========================================`n" -ForegroundColor Cyan
 
     $json = Get-Content $results_file | ConvertFrom-Json
     $strategy_name = $json.strategy_comparison[0].key
     $results = $json.strategy.$strategy_name
 
-    Write-Host "Стратегия: $strategy_name" -ForegroundColor Green
-    Write-Host "Период: $($json.backtest_start_time) - $($json.backtest_end_time)"
+    Write-Host "Strategy: $strategy_name" -ForegroundColor Green
+    Write-Host "Period: $($json.backtest_start_time) - $($json.backtest_end_time)"
     Write-Host ""
-    Write-Host "СТАТИСТИКА:" -ForegroundColor Yellow
-    Write-Host "  Всего сделок: $($results.total_trades)"
-    Write-Host "  Прибыльных: $($results.wins) ($($results.win_rate)%)"
-    Write-Host "  Убыточных: $($results.losses)"
+    Write-Host "STATISTICS:" -ForegroundColor Yellow
+    Write-Host "  Total trades: $($results.total_trades)"
+    Write-Host "  Wins: $($results.wins) ($($results.win_rate)%)"
+    Write-Host "  Losses: $($results.losses)"
     Write-Host ""
-    Write-Host "ФИНАНСЫ:" -ForegroundColor Yellow
-    Write-Host "  Начальный капитал: $($results.starting_balance) USDT"
-    Write-Host "  Финальный капитал: $($results.final_balance) USDT"
-    Write-Host "  Общая прибыль: $($results.profit_total) USDT ($($results.profit_total_pct)%)"
-    Write-Host "  Макс. просадка: $($results.max_drawdown_account)%"
+    Write-Host "FINANCES:" -ForegroundColor Yellow
+    Write-Host "  Starting balance: $($results.starting_balance) USDT"
+    Write-Host "  Final balance: $($results.final_balance) USDT"
+    Write-Host "  Total profit: $($results.profit_total) USDT ($($results.profit_total_pct)%)"
+    Write-Host "  Max drawdown: $($results.max_drawdown_account)%"
     Write-Host ""
-    Write-Host "МЕТРИКИ:" -ForegroundColor Yellow
+    Write-Host "METRICS:" -ForegroundColor Yellow
     Write-Host "  Sharpe Ratio: $($results.sharpe)"
     Write-Host "  Sortino Ratio: $($results.sortino)"
     Write-Host "  Calmar Ratio: $($results.calmar)"
@@ -77,58 +77,57 @@ if (Test-Path $results_file) {
 }
 """
 
-    # Сохраняем и выполняем скрипт
+    # Save and execute script
     temp_script = freqtrade_path / "show_results.ps1"
     with open(temp_script, "w", encoding="utf-8") as f:
         f.write(ps_script)
 
-    # Запускаем
+    # Run
     result = subprocess.run(
         ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(temp_script)],
         encoding='utf-8',
-        capture_output=False  # Показываем вывод напрямую
+        capture_output=False  # Show output directly
     )
 
-    # Удаляем временный файл
+    # Delete temporary file
     temp_script.unlink(missing_ok=True)
 
-    # Читаем результаты из JSON файла
+    # Read results from JSON file
     results_file = freqtrade_path / "ft_userdata" / "backtest_results" / ".last_result.json"
     if results_file.exists():
         with open(results_file, "r", encoding="utf-8") as f:
             results = json.load(f)
 
         print("\n" + "=" * 60)
-        print("📊 СВОДКА РЕЗУЛЬТАТОВ")
+        print("RESULTS SUMMARY")
         print("=" * 60)
 
-        # Парсим результаты
+        # Parse results
         if "strategy" in results:
             for strategy_name, strategy_results in results["strategy"].items():
-                print(f"\nСтратегия: {strategy_name}")
-                print(
-                    f"Период: {results.get('backtest_start_time', 'N/A')} - {results.get('backtest_end_time', 'N/A')}")
-                print(f"\n📈 Производительность:")
-                print(f"  • Всего сделок: {strategy_results.get('total_trades', 0)}")
-                print(f"  • Прибыльных: {strategy_results.get('wins', 0)}")
-                print(f"  • Убыточных: {strategy_results.get('losses', 0)}")
+                print(f"\nStrategy: {strategy_name}")
+                print(f"Period: {results.get('backtest_start_time', 'N/A')} - {results.get('backtest_end_time', 'N/A')}")
+                print(f"\nPerformance:")
+                print(f"  • Total trades: {strategy_results.get('total_trades', 0)}")
+                print(f"  • Wins: {strategy_results.get('wins', 0)}")
+                print(f"  • Losses: {strategy_results.get('losses', 0)}")
 
                 profit_total = strategy_results.get('profit_total', 0)
                 profit_pct = strategy_results.get('profit_total_pct', 0)
 
                 if profit_total > 0:
-                    print(f"\n💰 Прибыль: ${profit_total:.2f} ({profit_pct:.2f}%)")
+                    print(f"\nProfit: ${profit_total:.2f} ({profit_pct:.2f}%)")
                 else:
-                    print(f"\n💸 Убыток: ${profit_total:.2f} ({profit_pct:.2f}%)")
+                    print(f"\nLoss: ${profit_total:.2f} ({profit_pct:.2f}%)")
 
-                print(f"\n📊 Метрики:")
+                print(f"\nMetrics:")
                 print(f"  • Sharpe Ratio: {strategy_results.get('sharpe', 0):.2f}")
                 print(f"  • Max Drawdown: {strategy_results.get('max_drawdown_account', 0):.2f}%")
                 print(f"  • Win Rate: {strategy_results.get('win_rate', 0):.1f}%")
 
-        # Предложения по улучшению
+        # Recommendations
         print("\n" + "=" * 60)
-        print("💡 РЕКОМЕНДАЦИИ")
+        print("RECOMMENDATIONS")
         print("=" * 60)
 
         if results.get("strategy"):
@@ -136,44 +135,44 @@ if (Test-Path $results_file) {
             total_trades = strategy_results.get('total_trades', 0)
 
             if total_trades == 0:
-                print("\n⚠️ Нет сделок! Возможные причины:")
-                print("  1. Слишком строгие условия входа")
-                print("  2. Недостаточно данных")
-                print("  3. Высокие пороги индикаторов")
-                print("\n🔧 Попробуйте:")
-                print("  • Снизить buy_rsi с 35 до 30")
-                print("  • Увеличить sell_rsi с 65 до 70")
-                print("  • Уменьшить volume_ratio с 1.5 до 1.2")
+                print("\nWarning: No trades! Possible causes:")
+                print("  1. Entry conditions too strict")
+                print("  2. Not enough data")
+                print("  3. High indicator thresholds")
+                print("\nTry:")
+                print("  • Reduce buy_rsi from 35 to 30")
+                print("  • Increase sell_rsi from 65 to 70")
+                print("  • Reduce volume_ratio from 1.5 to 1.2")
             elif total_trades < 10:
-                print("\n⚠️ Мало сделок. Попробуйте:")
-                print("  • Расширить условия входа")
-                print("  • Добавить больше пар")
-                print("  • Увеличить период тестирования")
+                print("\nFew trades. Try:")
+                print("  • Relaxing entry conditions")
+                print("  • Adding more pairs")
+                print("  • Increasing test period")
             else:
                 win_rate = strategy_results.get('win_rate', 0)
                 if win_rate < 40:
-                    print("\n⚠️ Низкий Win Rate. Улучшите:")
-                    print("  • Фильтры входа (добавьте тренд)")
-                    print("  • Стоп-лоссы (уменьшите с 5% до 3%)")
-                    print("  • Тайминг входа (используйте старший таймфрейм)")
+                    print("\nLow Win Rate. Improve:")
+                    print("  • Entry filters (add trend)")
+                    print("  • Stop losses (reduce from 5% to 3%)")
+                    print("  • Entry timing (use higher timeframe)")
 
 
 def analyze_and_optimize():
     """
-    Анализ результатов и предложения по оптимизации
+    Analyze results and suggest optimizations
     """
     print("\n" + "=" * 60)
-    print("🔧 ЗАПУСК ОПТИМИЗАЦИИ")
+    print("STARTING OPTIMIZATION")
     print("=" * 60)
 
     freqtrade_path = Path("C:/freqtrade-nfi")
 
-    ps_script = """
+    ps_script = r"""
 Set-Location "C:\freqtrade-nfi"
 & .\venv\Scripts\Activate.ps1
 
-Write-Host "`nЗапуск оптимизации параметров..." -ForegroundColor Yellow
-Write-Host "Это может занять несколько минут...`n" -ForegroundColor Cyan
+Write-Host "`nStarting parameter optimization..." -ForegroundColor Yellow
+Write-Host "This may take several minutes...`n" -ForegroundColor Cyan
 
 freqtrade hyperopt `
     --userdir ft_userdata `
@@ -183,8 +182,8 @@ freqtrade hyperopt `
     --spaces buy sell `
     --timerange 20250801-20250914
 
-Write-Host "`n✅ Оптимизация завершена!" -ForegroundColor Green
-Write-Host "Лучшие параметры сохранены в ft_userdata\hyperopt_results\" -ForegroundColor Yellow
+Write-Host "`nOptimization complete!" -ForegroundColor Green
+Write-Host "Best parameters saved in ft_userdata\hyperopt_results\" -ForegroundColor Yellow
 """
 
     temp_script = freqtrade_path / "optimize.ps1"
@@ -201,31 +200,31 @@ Write-Host "Лучшие параметры сохранены в ft_userdata\hy
 
 def create_report():
     """
-    Создание HTML отчета с графиками
+    Create HTML report with charts
     """
-    print("\n📊 Создание визуального отчета...")
+    print("\nCreating visual report...")
 
     freqtrade_path = Path("C:/freqtrade-nfi")
 
-    ps_script = """
+    ps_script = r"""
 Set-Location "C:\freqtrade-nfi"
 & .\venv\Scripts\Activate.ps1
 
-# Создание графиков
+# Create charts
 freqtrade plot-dataframe `
     --userdir ft_userdata `
     --strategy AdvancedCryptoStrategy `
     --pairs BTC/USDT ETH/USDT `
     --timerange 20250907-20250914
 
-# Создание графика прибыли
+# Create profit chart
 freqtrade plot-profit `
     --userdir ft_userdata `
     --strategy AdvancedCryptoStrategy `
     --timerange 20250907-20250914
 
-Write-Host "`n✅ Отчеты созданы в ft_userdata\plot\" -ForegroundColor Green
-Write-Host "Откройте HTML файлы в браузере для просмотра" -ForegroundColor Yellow
+Write-Host "`nReports created in ft_userdata\plot\" -ForegroundColor Green
+Write-Host "Open HTML files in browser to view" -ForegroundColor Yellow
 """
 
     temp_script = freqtrade_path / "create_report.ps1"
@@ -239,7 +238,7 @@ Write-Host "Откройте HTML файлы в браузере для прос
 
     temp_script.unlink(missing_ok=True)
 
-    # Открываем папку с отчетами
+    # Open the plot directory
     plot_dir = freqtrade_path / "ft_userdata" / "plot"
     if plot_dir.exists():
         os.startfile(plot_dir)
@@ -247,16 +246,16 @@ Write-Host "Откройте HTML файлы в браузере для прос
 
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    print("FREQTRADE АНАЛИЗ РЕЗУЛЬТАТОВ")
+    print("FREQTRADE RESULTS ANALYSIS")
     print("=" * 60)
 
-    print("\nВыберите действие:")
-    print("1. Запустить бэктест с полным выводом")
-    print("2. Оптимизировать параметры")
-    print("3. Создать визуальный отчет")
-    print("4. Все вместе")
+    print("\nSelect action:")
+    print("1. Run backtest with full output")
+    print("2. Optimize parameters")
+    print("3. Create visual report")
+    print("4. All together")
 
-    choice = input("\nВаш выбор (1-4): ").strip()
+    choice = input("\nYour choice (1-4): ").strip()
 
     if choice == "1":
         run_freqtrade_backtest()
@@ -266,10 +265,10 @@ if __name__ == "__main__":
         create_report()
     elif choice == "4":
         run_freqtrade_backtest()
-        print("\nХотите запустить оптимизацию? (y/n): ", end="")
+        print("\nWould you like to run optimization? (y/n): ", end="")
         if input().lower() == 'y':
             analyze_and_optimize()
         create_report()
     else:
-        # По умолчанию запускаем бэктест
+        # Default - run backtest
         run_freqtrade_backtest()
